@@ -1,0 +1,62 @@
+name: codex-webui
+
+services:
+  codex-webui:
+    image: ${CODEX_WEBUI_IMAGE:-codex-webui:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CODEX_VERSION: ${CODEX_VERSION:-0.153.0}
+    container_name: codex-webui
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4173
+      # One shared profile: conversations persist while the owner rotates ChatGPT accounts.
+      CODEX_HOME: /home/node/.codex
+      CODEX_WEBUI_CODEX_BIN: /usr/local/bin/codex
+      CODEX_WEBUI_DATA_DIR: /data
+      CODEX_WEBUI_ALLOWED_ROOTS: /workspace
+      CODEX_WEBUI_BASE_PATH: ""
+
+      # Public deployment security. Keep the normal and owner passwords different.
+      CODEX_WEBUI_PASSWORD_HASH: ${CODEX_WEBUI_PASSWORD_HASH:-}
+      CODEX_WEBUI_OWNER_PASSWORD_HASH: ${CODEX_WEBUI_OWNER_PASSWORD_HASH:-}
+      CODEX_WEBUI_VIEWER_PASSWORD_HASH: ${CODEX_WEBUI_VIEWER_PASSWORD_HASH:-}
+      CODEX_WEBUI_SESSION_SECRET: ${CODEX_WEBUI_SESSION_SECRET:-}
+      CODEX_WEBUI_REQUIRE_OWNER: "true"
+      CODEX_WEBUI_REQUIRE_ORIGIN_HEADER: "true"
+      CODEX_WEBUI_COOKIE_SECURE: always
+      CODEX_WEBUI_COOKIE_SAMESITE: strict
+      CODEX_WEBUI_CORS_ALLOWED_ORIGINS: ${CODEX_WEBUI_PUBLIC_ORIGIN:-}
+
+      # Share the default profile runtime; concurrent active turns receive extra runtimes as needed.
+      CODEX_WEBUI_PER_SESSION_APP_SERVERS: ${CODEX_WEBUI_PER_SESSION_APP_SERVERS:-false}
+      CODEX_WEBUI_MAX_APP_SERVERS: ${CODEX_WEBUI_MAX_APP_SERVERS:-auto}
+      CODEX_WEBUI_APP_SERVER_IDLE_SECONDS: ${CODEX_WEBUI_APP_SERVER_IDLE_SECONDS:-300}
+      CODEX_WEBUI_APP_SERVER_STARTUP_TIMEOUT_SECONDS: ${CODEX_WEBUI_APP_SERVER_STARTUP_TIMEOUT_SECONDS:-10}
+      CODEX_WEBUI_APP_SERVER_TIMEOUT_SECONDS: ${CODEX_WEBUI_APP_SERVER_TIMEOUT_SECONDS:-600}
+      CODEX_WEBUI_MAX_UPLOAD_MB: ${CODEX_WEBUI_MAX_UPLOAD_MB:-50}
+      CODEX_WEBUI_MAX_ATTACHMENT_STORAGE_MB: ${CODEX_WEBUI_MAX_ATTACHMENT_STORAGE_MB:-10240}
+      CODEX_WEBUI_DEFAULT_SANDBOX: ${CODEX_WEBUI_DEFAULT_SANDBOX:-workspace-write}
+      CODEX_WEBUI_DEFAULT_APPROVAL_POLICY: ${CODEX_WEBUI_DEFAULT_APPROVAL_POLICY:-on-request}
+      CODEX_WEBUI_DEFAULT_AUTO_APPROVE: ${CODEX_WEBUI_DEFAULT_AUTO_APPROVE:-manual}
+      CODEX_WEBUI_DEFAULT_NETWORK: ${CODEX_WEBUI_DEFAULT_NETWORK:-true}
+      CODEX_WEBUI_ENABLE_SYSTEM_SHUTDOWN: "false"
+      CODEX_WEBUI_FORCE_YOLO: "false"
+    volumes:
+      - ./data/codex:/home/node/.codex
+      - ./data/webui:/data
+      - ./workspace:/workspace
+    expose:
+      - "4173"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - nginx_network
+
+networks:
+  nginx_network:
+    external: true
+    name: nginx_network

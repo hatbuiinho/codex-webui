@@ -1,0 +1,12 @@
+.git
+.github
+.svelte-kit
+build
+node_modules
+backend/target
+data
+workspace
+.env
+.DS_Store
+playwright-report
+test-results
