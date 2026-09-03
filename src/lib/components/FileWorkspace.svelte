@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Download, Edit3, FileDiff, FileText, GitBranch, RefreshCw, Save, X } from "lucide-svelte";
 
-  import { api } from "$lib/api";
+  import { api, apiPath } from "$lib/api";
   import MarkdownMessage from "$lib/components/MarkdownMessage.svelte";
   import MonacoTextEditor from "$lib/components/MonacoTextEditor.svelte";
   import { m } from "$lib/paraglide/messages.js";
@@ -33,13 +33,19 @@
   let errorText = $state("");
   let noticeText = $state("");
   let editMode = $state(false);
-  let viewMode = $state<ViewMode>("source");
+  let viewMode = $state<ViewMode>("preview");
   let loadedPath = "";
   let loadVersion = 0;
 
   const displayName = $derived(payload?.displayName || baseName(filePath) || filePath);
   const activePath = $derived(payload?.path || filePath);
   const markdown = $derived(isMarkdownPath(activePath));
+  const pdf = $derived(isPdfPath(activePath));
+  const image = $derived(isImagePath(activePath));
+  const binaryPreview = $derived(pdf || image);
+  const binaryPreviewUrl = $derived(
+    binaryPreview ? apiPath(`/editor/download?filePath=${encodeURIComponent(activePath)}`) : ""
+  );
   const dirty = $derived(Boolean(payload && editorValue !== payload.content));
   const canEdit = $derived(Boolean(payload?.writable && !readOnly));
 
@@ -49,6 +55,14 @@
 
   function isMarkdownPath(path: string) {
     return /\.(md|mdown|markdown|mdx)$/iu.test(path);
+  }
+
+  function isPdfPath(path: string) {
+    return /\.pdf$/iu.test(path);
+  }
+
+  function isImagePath(path: string) {
+    return /\.(avif|gif|jpe?g|png|webp)$/iu.test(path);
   }
 
   function describeError(error: unknown) {
@@ -68,7 +82,7 @@
       payload = nextPayload;
       editorValue = nextPayload.content;
       editMode = false;
-      viewMode = "source";
+      viewMode = isMarkdownPath(nextPayload.path) ? "preview" : "source";
     } catch (error) {
       if (version !== loadVersion) {
         return;
@@ -95,6 +109,7 @@
       payload = nextPayload;
       editorValue = nextPayload.content;
       editMode = false;
+      viewMode = markdown ? "preview" : "source";
       noticeText = "";
     } catch (error) {
       errorText = describeError(error);
@@ -138,6 +153,17 @@
       return;
     }
     loadedPath = nextPath;
+    if (isPdfPath(nextPath) || isImagePath(nextPath)) {
+      loadVersion += 1;
+      payload = null;
+      editorValue = "";
+      editMode = false;
+      viewMode = "preview";
+      loading = false;
+      errorText = "";
+      noticeText = "";
+      return;
+    }
     void loadFile(nextPath);
   });
 </script>
@@ -179,23 +205,27 @@
             {m.file_viewer_preview()}
           </button>
         {/if}
-        <button class="file-workspace__button" data-active={viewMode === "source" || editMode} onclick={() => { editMode = false; viewMode = "source"; }} type="button">
-          <FileText size={14} />
-          <span>{m.file_viewer_source()}</span>
-        </button>
-        <button class="file-workspace__button" disabled={!canEdit} data-active={editMode} onclick={() => { editMode = true; viewMode = "source"; }} type="button">
-          <Edit3 size={14} />
-          <span>{m.edit()}</span>
-        </button>
-        <button class="file-workspace__button file-workspace__button--strong" disabled={!dirty || !canEdit || saving} onclick={() => void saveFile()} type="button">
-          {#if saving}
-            <span class="file-workspace__spin"><RefreshCw size={14} /></span>
-            <span>{m.saving()}</span>
-          {:else}
-            <Save size={14} />
-            <span>{m.save()}</span>
+        {#if !binaryPreview}
+          {#if !markdown}
+            <button class="file-workspace__button" data-active={viewMode === "source" || editMode} onclick={() => { editMode = false; viewMode = "source"; }} type="button">
+              <FileText size={14} />
+              <span>{m.file_viewer_source()}</span>
+            </button>
           {/if}
-        </button>
+          <button class="file-workspace__button" disabled={!canEdit} data-active={editMode} onclick={() => { editMode = true; viewMode = "source"; }} type="button">
+            <Edit3 size={14} />
+            <span>{m.edit()}</span>
+          </button>
+          <button class="file-workspace__button file-workspace__button--strong" disabled={!dirty || !canEdit || saving} onclick={() => void saveFile()} type="button">
+            {#if saving}
+              <span class="file-workspace__spin"><RefreshCw size={14} /></span>
+              <span>{m.saving()}</span>
+            {:else}
+              <Save size={14} />
+              <span>{m.save()}</span>
+            {/if}
+          </button>
+        {/if}
         <button class="file-workspace__icon-button" onclick={() => void onClose()} type="button" title={m.close()}>
           <X size={18} />
         </button>
@@ -215,7 +245,13 @@
     {/if}
 
     <section class="file-workspace__panel">
-      {#if loading && !payload}
+      {#if pdf}
+        <iframe class="file-workspace__pdf" src={binaryPreviewUrl} title={`PDF preview: ${displayName}`}></iframe>
+      {:else if image}
+        <div class="file-workspace__image-wrap">
+          <img alt={displayName} class="file-workspace__image" src={binaryPreviewUrl} />
+        </div>
+      {:else if loading && !payload}
         <div class="file-workspace__empty">
           <span class="file-workspace__spin"><RefreshCw size={18} /></span>
           <span>{m.loading_file()}</span>
@@ -403,6 +439,38 @@
 
   .file-workspace__markdown {
     padding: clamp(1rem, 3vw, 2rem);
+  }
+
+  .file-workspace__pdf {
+    display: block;
+    width: 100%;
+    height: min(76vh, 70rem);
+    border: 0;
+    background: #f1f5f9;
+  }
+
+  .file-workspace__image-wrap {
+    display: grid;
+    min-height: 24rem;
+    place-items: center;
+    overflow: auto;
+    padding: 1.25rem;
+    background-color: #e2e8f0;
+    background-image:
+      linear-gradient(45deg, rgba(148, 163, 184, 0.24) 25%, transparent 25%),
+      linear-gradient(-45deg, rgba(148, 163, 184, 0.24) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, rgba(148, 163, 184, 0.24) 75%),
+      linear-gradient(-45deg, transparent 75%, rgba(148, 163, 184, 0.24) 75%);
+    background-position: 0 0, 0 0.75rem, 0.75rem -0.75rem, -0.75rem 0;
+    background-size: 1.5rem 1.5rem;
+  }
+
+  .file-workspace__image {
+    display: block;
+    max-width: 100%;
+    max-height: min(76vh, 70rem);
+    object-fit: contain;
+    box-shadow: 0 16px 40px -26px rgba(15, 23, 42, 0.7);
   }
 
   .file-workspace__empty {

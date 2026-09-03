@@ -63,12 +63,33 @@ pub(crate) async fn handle_editor_download_api_http(
                     value => value,
                 })
                 .collect::<String>();
-            let disposition = format!("attachment; filename=\"{safe_name}\"");
+            let lowercase_name = payload.display_name.to_ascii_lowercase();
+            let content_type = if lowercase_name.ends_with(".pdf") {
+                "application/pdf"
+            } else if lowercase_name.ends_with(".png") {
+                "image/png"
+            } else if lowercase_name.ends_with(".jpg") || lowercase_name.ends_with(".jpeg") {
+                "image/jpeg"
+            } else if lowercase_name.ends_with(".gif") {
+                "image/gif"
+            } else if lowercase_name.ends_with(".webp") {
+                "image/webp"
+            } else if lowercase_name.ends_with(".avif") {
+                "image/avif"
+            } else {
+                "application/octet-stream"
+            };
+            let disposition_kind = if content_type == "application/octet-stream" {
+                "attachment"
+            } else {
+                "inline"
+            };
+            let disposition = format!("{disposition_kind}; filename=\"{safe_name}\"");
             let mut response = Response::new(Body::from(payload.bytes));
             let headers = response.headers_mut();
             headers.insert(
                 header::CONTENT_TYPE,
-                HeaderValue::from_static("application/octet-stream"),
+                HeaderValue::from_static(content_type),
             );
             if let Ok(value) = HeaderValue::from_str(&content_length) {
                 headers.insert(header::CONTENT_LENGTH, value);
