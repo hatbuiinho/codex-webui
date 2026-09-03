@@ -29,6 +29,7 @@
     Sun,
     Power,
     Download,
+    Copy,
     UserCog,
     Pencil,
     Trash2
@@ -374,6 +375,13 @@
       renameAccount: isKorean ? "계정 라벨 변경" : "Rename account",
       deleteAccount: isKorean ? "계정 삭제" : "Delete account",
       signInAction: m.sign_in_action(),
+      signInWithDeviceCode: isKorean ? "디바이스 코드로 로그인" : "Sign in with Device Code",
+      deviceCodeSignInDescription: isKorean
+        ? "아래 링크를 열고 일회용 코드를 입력하세요."
+        : "Open the link below and enter the one-time code.",
+      openDeviceCodePage: isKorean ? "인증 페이지 열기" : "Open sign-in page",
+      copyDeviceCode: isKorean ? "코드 복사" : "Copy code",
+      cancelDeviceCode: isKorean ? "취소" : "Cancel",
       signOut: m.sign_out(),
       connected: m.connected(),
       signInRequired: m.sign_in_required(),
@@ -971,6 +979,17 @@
       placement: "below",
       preferredWidth: 352
     });
+  }
+
+  async function copyDeviceCode() {
+    if (accountLoginFlow?.type !== "chatgptDeviceCode" || typeof navigator === "undefined") {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(accountLoginFlow.userCode);
+    } catch {
+      // The code remains visible for browsers that deny clipboard access.
+    }
   }
 
   $effect(() => {
@@ -2339,6 +2358,43 @@
         </div>
 
         <div class="sidebar-flyout-footer p-2 border-t border-gray-100 bg-gray-50/50 space-y-1">
+          {#if accountLoginFlow?.type === "chatgptDeviceCode"}
+            <div class="mb-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-left shadow-sm">
+              <p class="text-xs font-bold text-amber-900">{ui.signInWithDeviceCode}</p>
+              <p class="mt-1 text-[11px] leading-snug text-amber-800">{ui.deviceCodeSignInDescription}</p>
+              <a
+                class="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-300 bg-white px-2.5 py-2 text-[11px] font-bold text-amber-800 transition-colors hover:bg-amber-100"
+                href={accountLoginFlow.verificationUrl}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <ExternalLink size={12} />
+                {ui.openDeviceCodePage}
+              </a>
+              <div class="mt-2 flex items-center gap-2">
+                <code class="min-w-0 flex-1 select-all rounded-md border border-amber-200 bg-white px-2.5 py-2 text-center text-xs font-bold tracking-wider text-amber-950">{accountLoginFlow.userCode}</code>
+                <button
+                  class="rounded-lg border border-amber-300 bg-white p-2 text-amber-800 transition-colors hover:bg-amber-100"
+                  onclick={copyDeviceCode}
+                  title={ui.copyDeviceCode}
+                  type="button"
+                >
+                  <Copy size={14} />
+                </button>
+              </div>
+              {#if accountLoginFlow.error}
+                <p class="mt-2 text-[11px] font-medium text-red-700">{accountLoginFlow.error}</p>
+              {/if}
+              <button
+                class="mt-2 w-full rounded-lg px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!accountLoginFlow.busy}
+                onclick={() => onCancelAccountLogin(accountLoginFlow.loginId)}
+                type="button"
+              >
+                {ui.cancelDeviceCode}
+              </button>
+            </div>
+          {/if}
           <button 
             class="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-white hover:text-amber-600 rounded-lg transition-all"
             disabled={quotaBusy}
@@ -2369,11 +2425,11 @@
           {/if}
           <button 
             class="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-white hover:text-amber-600 rounded-lg transition-all disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={readOnly}
-            onclick={() => onStartAccountLogin("chatgpt")}
+            disabled={readOnly || accountLoginFlow?.busy}
+            onclick={() => onStartAccountLogin("chatgptDeviceCode")}
           >
             <ExternalLink size={14} />
-            {account?.email || account?.type ? ui.switchAccount : ui.signInAction}
+            {account?.email || account?.type ? ui.switchAccount : ui.signInWithDeviceCode}
           </button>
           <div class="h-px bg-gray-200/50 my-1 mx-2"></div>
           <button 
