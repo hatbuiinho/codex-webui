@@ -10,7 +10,15 @@ pub(crate) async fn handle_http(
         .get::<ConnectInfo<SocketAddr>>()
         .map(|connect_info| connect_info.0);
     let mut response = handle_http_inner(state, jar, request, peer_addr).await;
+    let inline_pdf_response = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|content_type| content_type.eq_ignore_ascii_case("application/pdf"));
     apply_security_headers(response.headers_mut());
+    if inline_pdf_response {
+        response.headers_mut().remove(header::X_FRAME_OPTIONS);
+    }
     response
 }
 

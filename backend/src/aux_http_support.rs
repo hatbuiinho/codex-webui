@@ -91,6 +91,12 @@ pub(crate) async fn handle_editor_download_api_http(
                 header::CONTENT_TYPE,
                 HeaderValue::from_static(content_type),
             );
+            if content_type == "application/pdf" {
+                headers.insert(
+                    header::HeaderName::from_static("content-security-policy"),
+                    HeaderValue::from_static("default-src 'none'; frame-ancestors 'self'"),
+                );
+            }
             if let Ok(value) = HeaderValue::from_str(&content_length) {
                 headers.insert(header::CONTENT_LENGTH, value);
             }
