@@ -7,6 +7,8 @@ FROM rust:${RUST_VERSION}-bookworm AS rust-toolchain
 
 FROM node:${NODE_VERSION}-bookworm AS builder
 
+ARG TARGETARCH
+
 ENV CARGO_HOME=/usr/local/cargo \
     RUSTUP_HOME=/usr/local/rustup \
     PATH="/usr/local/cargo/bin:${PATH}"
@@ -25,7 +27,12 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY . .
-RUN pnpm build
+RUN --mount=type=cache,id=codex-webui-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=codex-webui-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=codex-webui-cargo-target-${TARGETARCH},target=/app/backend/target,sharing=locked \
+    pnpm build \
+    && mkdir -p /app/runtime-artifacts \
+    && cp /app/dist/backend/*/backend /app/runtime-artifacts/backend
 
 
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
@@ -50,7 +57,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=builder --chown=node:node /app/build/static ./build/static
-COPY --from=builder --chown=node:node /app/backend/target/release/backend ./backend
+COPY --from=builder --chown=node:node /app/runtime-artifacts/backend ./backend
 COPY --from=builder --chown=node:node /app/scripts/hash-password.mjs ./scripts/hash-password.mjs
 
 ENV HOST=0.0.0.0 \
