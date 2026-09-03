@@ -78,7 +78,8 @@
     observeSessionStreamEvent,
     reconcileSessionStreamBoundary,
     type SessionStreamCursor,
-    type SessionStreamCursorResult
+    type SessionStreamCursorResult,
+    type SessionStreamMetadata
   } from "$lib/session-stream-cursor";
   import {
     buildTranscriptLayout,
@@ -499,6 +500,7 @@
   let sessionDetailCacheVersion = $state<string | null>(null);
   let sessionDetailStateHash = $state<string | null>(null);
   let sessionDetailMetadataVersion = $state<string | null>(null);
+  let sessionDetailSourceUpdatedAt = $state(0);
   let sessionTurnVersionsById = $state<Record<string, string>>({});
   let sessionCompletionVersionsByTurnId = $state<Record<string, string>>({});
   const readOnlyRole = $derived(webRole === "viewer");
@@ -1173,6 +1175,23 @@
     return normalizedPreview;
   }
 
+  function completionRefreshTurnAnchors(turn: CodexTurn | undefined, requireNewerTurn: boolean) {
+    if (!turn || !requireNewerTurn) {
+      return { expectedTurnId: null, afterTurnId: null };
+    }
+    const hasFinalResponse =
+      String(turn.status ?? "") !== "inProgress" &&
+      turn.items.some(
+        (item) =>
+          item.type === "agentMessage" &&
+          String(item.phase ?? "") !== "commentary" &&
+          Boolean(normalizeSessionSummaryPreviewText(getUserText(item as Record<string, unknown>)))
+      );
+    return hasFinalResponse
+      ? { expectedTurnId: null, afterTurnId: turn.id }
+      : { expectedTurnId: turn.id, afterTurnId: null };
+  }
+
   function getConversationDisplayTitle(state: ConversationState | null | undefined) {
     if (!state) {
       return null;
@@ -1839,6 +1858,7 @@
     sessionDetailCacheVersion = null;
     sessionDetailStateHash = null;
     sessionDetailMetadataVersion = null;
+    sessionDetailSourceUpdatedAt = 0;
     sessionTurnVersionsById = {};
     scheduleSelectedSessionStateRefresh(sessionId, 0, true);
   }
@@ -1859,7 +1879,7 @@
     sessionId: string,
     profileId: string | null,
     requestCursor: SessionStreamCursor | null,
-    detail: SessionDetailResponse
+    detail: SessionStreamMetadata
   ) {
     applySessionStreamCursorResult(
       scopeKey,
@@ -5538,6 +5558,7 @@
     const payloadTurnId = String(payload.turnId ?? "").trim() || null;
     if (
       !payload.settled ||
+      !payload.expectedTurnReady ||
       !payload.sourceStable ||
       !payloadTurnId ||
       (requestedTurnId && requestedTurnId !== payloadTurnId) ||
@@ -5705,6 +5726,7 @@
     profileId: string | null,
     selectionVersion: number,
     expectedTurnId: string | null,
+    afterTurnId: string | null,
     baselineCompletionVersion: string | null,
     requireCompletionVersionChange: boolean
   ) {
@@ -5726,6 +5748,7 @@
     const payload = await api.getSessionLatestCompletedTurn(
       sessionId,
       expectedTurnId,
+      afterTurnId,
       knownCompletionVersion,
       profileId
     );
@@ -5767,6 +5790,7 @@
   function scheduleSelectedSessionCompletionRefresh(
     sessionId: string,
     expectedTurnId: string | null = null,
+    afterTurnId: string | null = null,
     baselineCompletionVersion: string | null = null,
     requireCompletionVersionChange = false,
     probeDespiteLiveDetail = false
@@ -5774,7 +5798,8 @@
     const scheduledSelectionVersion = sessionSelectionVersion;
     const scheduledProfileId = profileIdForSession(sessionId);
     const normalizedExpectedTurnId = String(expectedTurnId ?? "").trim() || null;
-    const jobKey = `${sessionId}\u0000${normalizedExpectedTurnId ?? "latest"}`;
+    const normalizedAfterTurnId = String(afterTurnId ?? "").trim() || null;
+    const jobKey = `${sessionId}\u0000${normalizedExpectedTurnId ?? "latest"}\u0000${normalizedAfterTurnId ?? "baseline"}`;
     const existingJob = selectedSessionCompletionRefreshJobs.get(jobKey);
     if (existingJob) {
       for (const timer of existingJob.timers) {
@@ -5818,6 +5843,7 @@
           scheduledProfileId,
           scheduledSelectionVersion,
           normalizedExpectedTurnId,
+          normalizedAfterTurnId,
           baselineCompletionVersion,
           requireCompletionVersionChange
         ).then((result) => {
@@ -5952,6 +5978,7 @@
     sessionDetailCacheVersion = null;
     sessionDetailStateHash = null;
     sessionDetailMetadataVersion = null;
+    sessionDetailSourceUpdatedAt = 0;
     sessionTurnVersionsById = {};
     sessionCompletionVersionsByTurnId = {};
     loadingDetail = false;
@@ -6379,6 +6406,7 @@
         scheduleSelectedSessionCompletionRefresh(
           sessionId,
           null,
+          null,
           latestTurn ? (sessionCompletionVersionsByTurnId[latestTurn.id] ?? null) : null
         );
       }
@@ -6487,6 +6515,7 @@
     sessionDetailCacheVersion = null;
     sessionDetailStateHash = null;
     sessionDetailMetadataVersion = null;
+    sessionDetailSourceUpdatedAt = 0;
     sessionTurnVersionsById = {};
     sessionCompletionVersionsByTurnId = {};
     pendingSteerResume = null;
@@ -6507,7 +6536,6 @@
       const detailCacheKey = buildSessionDetailBrowserCacheKey(sessionId, resolvedProfileId);
       let knownVersion: string | null = null;
       let turnLimit = olderTurnPageSize;
-      let cachedDetailNeedsCompletionUpdate = false;
       const terminalSelection = Boolean(
         summaryForSelection && !isLiveConversationStatus(summaryForSelection.status)
       );
@@ -6531,10 +6559,6 @@
             cachedEntry.payload.stateHash && cachedEntry.payload.turnVersions
               ? cachedEntry.version
               : null;
-          cachedDetailNeedsCompletionUpdate =
-            terminalSelection &&
-            normalizeSessionTimestamp(summaryForSelection?.updatedAt) >
-              normalizeSessionTimestamp(cachedEntry.payload.thread.updatedAt);
           turnLimit = Math.max(olderTurnPageSize, cachedEntry.payload.thread.turns.length);
           requestTranscriptBottomScroll(true);
         }
@@ -6579,11 +6603,17 @@
         clearHydrationRefresh();
       }
       if (terminalSelection || !isLiveConversationStatus(nextConversation.thread.status)) {
+        const latestTurn = nextConversation.thread.turns.at(-1);
+        const detailNeedsCompletionUpdate =
+          terminalSelection &&
+          normalizeSessionTimestamp(summaryForSelection?.updatedAt) > sessionDetailSourceUpdatedAt;
+        const completionAnchors = completionRefreshTurnAnchors(latestTurn, detailNeedsCompletionUpdate);
         scheduleSelectedSessionCompletionRefresh(
           sessionId,
-          null,
-          null,
-          cachedDetailNeedsCompletionUpdate,
+          completionAnchors.expectedTurnId,
+          completionAnchors.afterTurnId,
+          latestTurn ? (sessionCompletionVersionsByTurnId[latestTurn.id] ?? null) : null,
+          detailNeedsCompletionUpdate,
           true
         );
       }
@@ -6739,6 +6769,7 @@
     sessionDetailCacheVersion = null;
     sessionDetailStateHash = null;
     sessionDetailMetadataVersion = null;
+    sessionDetailSourceUpdatedAt = 0;
     sessionTurnVersionsById = {};
     sessionCompletionVersionsByTurnId = {};
     syncSelectedSessionInUrl(sessionId);
@@ -7097,6 +7128,7 @@
     sessionDetailCacheVersion = detail.cacheVersion ?? null;
     sessionDetailStateHash = detail.stateHash ?? null;
     sessionDetailMetadataVersion = detail.metadataVersion ?? null;
+    sessionDetailSourceUpdatedAt = normalizeSessionTimestamp(detail.thread.updatedAt);
     sessionTurnVersionsById = detail.turnVersions ? { ...detail.turnVersions } : {};
   }
 
@@ -7784,6 +7816,8 @@
               highlight: null
             };
           }
+          const completionAnchorTurn = conversation.thread.turns.at(-1);
+          const completionAnchors = completionRefreshTurnAnchors(completionAnchorTurn, summaryIsNewer);
           const statusReconciledConversation =
             summary.status === undefined || summary.status === null
               ? conversation
@@ -7811,7 +7845,8 @@
               !isLiveConversationStatus(summary.status);
             scheduleSelectedSessionCompletionRefresh(
               summary.id,
-              summaryIsNewer ? null : (latestTurn?.id ?? null),
+              summaryIsNewer ? completionAnchors.expectedTurnId : (latestTurn?.id ?? null),
+              summaryIsNewer ? completionAnchors.afterTurnId : null,
               latestTurn ? (sessionCompletionVersionsByTurnId[latestTurn.id] ?? null) : null,
               summaryIsNewer,
               summaryClaimsTerminal
