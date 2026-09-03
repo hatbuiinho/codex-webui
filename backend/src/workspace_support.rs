@@ -53,7 +53,7 @@ pub(crate) struct EditableFileDownloadPayload {
     pub(crate) bytes: Vec<u8>,
 }
 
-fn directory_entry_payload(path: &Path) -> DirectoryEntryPayload {
+fn directory_entry_payload(path: &Path, is_directory: bool) -> DirectoryEntryPayload {
     DirectoryEntryPayload {
         name: path
             .file_name()
@@ -62,7 +62,7 @@ fn directory_entry_payload(path: &Path) -> DirectoryEntryPayload {
             .map(str::to_string)
             .unwrap_or_else(|| path.display().to_string()),
         path: path.display().to_string(),
-        is_directory: true,
+        is_directory,
     }
 }
 
@@ -138,7 +138,7 @@ pub(crate) async fn list_directories_payload(
     let resolved_roots = resolved_allowed_roots(&state.config).await;
     let root_entries = resolved_roots
         .iter()
-        .map(|root| directory_entry_payload(root))
+        .map(|root| directory_entry_payload(root, true))
         .collect::<Vec<_>>();
 
     let Some(current_path) = current_path.filter(|value| !value.trim().is_empty()) else {
@@ -195,11 +195,21 @@ pub(crate) async fn list_directories_payload(
                 "Failed to inspect directory entry.",
             )
         })?;
+        let entry_path = entry.path();
         if file_type.is_dir() {
-            entries.push(directory_entry_payload(&entry.path()));
+            if ensure_not_sensitive_file_path(&entry_path).is_ok() {
+                entries.push(directory_entry_payload(&entry_path, true));
+            }
+        } else if file_type.is_file() && ensure_not_sensitive_file_path(&entry_path).is_ok() {
+            entries.push(directory_entry_payload(&entry_path, false));
         }
     }
-    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    entries.sort_by(|left, right| {
+        right
+            .is_directory
+            .cmp(&left.is_directory)
+            .then_with(|| left.name.cmp(&right.name))
+    });
 
     let parent_path = if resolved_roots.iter().any(|root| root == &resolved) {
         None
@@ -214,6 +224,107 @@ pub(crate) async fn list_directories_payload(
         entries,
     })
     .expect("directory payload should serialize"))
+}
+
+async fn resolve_workspace_mutation_path(state: &AppState, file_path: &str) -> ApiResult<PathBuf> {
+    if file_path.trim().is_empty() {
+        return Err(api_error(StatusCode::BAD_REQUEST, "path is required."));
+    }
+
+    let candidate = resolve_input_path(&state.config.project_root, file_path);
+    ensure_not_sensitive_file_path(&candidate)?;
+    let metadata = tokio_fs::symlink_metadata(&candidate).await.map_err(|_| {
+        api_error(StatusCode::BAD_REQUEST, "The selected path does not exist.")
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "Refusing to modify a symbolic link.",
+        ));
+    }
+
+    let resolved = tokio_fs::canonicalize(&candidate).await.map_err(|_| {
+        api_error(StatusCode::BAD_REQUEST, "The selected path does not exist.")
+    })?;
+    ensure_not_sensitive_file_path(&resolved)?;
+    let roots = resolved_allowed_roots(&state.config).await;
+    if roots.iter().any(|root| root == &resolved) {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "The workspace root cannot be renamed or deleted.",
+        ));
+    }
+    if !roots.iter().any(|root| path_is_within(root, &resolved)) {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "The selected path is outside the allowed roots.",
+        ));
+    }
+
+    Ok(resolved)
+}
+
+pub(crate) async fn rename_workspace_entry_payload(
+    state: &AppState,
+    file_path: &str,
+    new_name: &str,
+) -> ApiResult<Value> {
+    let source_path = resolve_workspace_mutation_path(state, file_path).await?;
+    let name = new_name.trim();
+    let name_path = Path::new(name);
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name_path.components().count() != 1
+        || name_path.file_name().and_then(|value| value.to_str()) != Some(name)
+    {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "The new name must be a single file or folder name.",
+        ));
+    }
+
+    let target_path = source_path.parent().ok_or_else(|| {
+        api_error(StatusCode::BAD_REQUEST, "The selected path has no parent directory.")
+    })?.join(name);
+    ensure_not_sensitive_file_path(&target_path)?;
+    if tokio_fs::symlink_metadata(&target_path).await.is_ok() {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "A file or folder with that name already exists.",
+        ));
+    }
+    tokio_fs::rename(&source_path, &target_path).await.map_err(|_| {
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to rename the selected path.")
+    })?;
+
+    Ok(json!({ "path": target_path.display().to_string() }))
+}
+
+pub(crate) async fn delete_workspace_entry_payload(
+    state: &AppState,
+    file_path: &str,
+) -> ApiResult<Value> {
+    let target_path = resolve_workspace_mutation_path(state, file_path).await?;
+    let metadata = tokio_fs::metadata(&target_path).await.map_err(|_| {
+        api_error(StatusCode::BAD_REQUEST, "The selected path does not exist.")
+    })?;
+    if metadata.is_dir() {
+        tokio_fs::remove_dir(&target_path).await.map_err(|error| {
+            let message = if error.kind() == std::io::ErrorKind::DirectoryNotEmpty {
+                "Folders must be empty before they can be deleted."
+            } else {
+                "Failed to delete the selected folder."
+            };
+            api_error(StatusCode::CONFLICT, message)
+        })?;
+    } else {
+        tokio_fs::remove_file(&target_path).await.map_err(|_| {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete the selected file.")
+        })?;
+    }
+
+    Ok(json!({ "ok": true }))
 }
 
 pub(crate) async fn resolve_editable_file_path(

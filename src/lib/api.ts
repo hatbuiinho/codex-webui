@@ -1011,6 +1011,14 @@ export const api = {
     return ws.request<DirectoryPayload>("directories/browse", { currentPath });
   },
 
+  renameWorkspaceEntry(path: string, newName: string) {
+    return ws.request<{ path: string }>("workspace/rename", { path, newName });
+  },
+
+  deleteWorkspaceEntry(path: string) {
+    return ws.request<{ ok: true }>("workspace/delete", { path });
+  },
+
   searchFileMentions(query: string, cwd: string | null, limit = 12) {
     return ws.request<FileMentionSearchPayload>("files/search", { query, cwd, limit });
   },

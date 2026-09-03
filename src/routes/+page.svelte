@@ -93,6 +93,7 @@
   import SessionTurnSearchPopover from "$lib/components/SessionTurnSearchPopover.svelte";
   import StartupAlertModal from "$lib/components/StartupAlertModal.svelte";
   import WorkspaceHeader from "$lib/components/WorkspaceHeader.svelte";
+  import WorkspaceExplorer from "$lib/components/WorkspaceExplorer.svelte";
   import WorkspaceTabStrip from "$lib/components/WorkspaceTabStrip.svelte";
   import { isContextWindowExceededPayload, isUsageLimitErrorPayload, parseAppError } from "$lib/errors";
   import { describeUiError } from "$lib/ui-errors";
@@ -365,6 +366,8 @@
   let resetTicketUseBusyId = $state<string | null>(null);
   let notificationsBusy = $state(false);
   let directoryPayload = $state<DirectoryPayload | null>(null);
+  let workspaceExplorerOpen = $state(true);
+  let workspaceExplorerRefreshVersion = $state(0);
   let requestAnswers = $state<Record<string, Record<string, string>>>({});
   let rawRequestResponses = $state<Record<string, string>>({});
   let pendingSessionEvents = $state<Record<string, StreamEvent[]>>({});
@@ -2835,6 +2838,7 @@
   const activeGitDiffTab = $derived.by(() => gitDiffTabs.find((tab) => tab.id === activeWorkspaceTabId) ?? null);
   const activeCodeDiffTab = $derived.by(() => codeDiffTabs.find((tab) => tab.id === activeWorkspaceTabId) ?? null);
   const activeFileTab = $derived.by(() => fileTabs.find((tab) => tab.id === activeWorkspaceTabId) ?? null);
+  const workspaceExplorerRootPath = $derived(config?.defaults.cwd ?? "/workspace");
   const startupPausedQueues = $derived(config?.startup.pausedQueues ?? []);
   const startupScheduledShutdown = $derived.by(() => {
     const shutdown = config?.startup.scheduledShutdown ?? null;
@@ -11234,6 +11238,35 @@
     workspaceMenuOpen = false;
   }
 
+  async function renameWorkspaceExplorerEntry(entry: { name: string; path: string }) {
+    const newName = window.prompt(`Rename ${entry.name}`, entry.name)?.trim();
+    if (!newName || newName === entry.name) {
+      return;
+    }
+    try {
+      await api.renameWorkspaceEntry(entry.path, newName);
+      workspaceExplorerRefreshVersion += 1;
+      noticeText = `Renamed ${entry.name}.`;
+    } catch (error) {
+      errorText = describeError(error);
+    }
+  }
+
+  async function deleteWorkspaceExplorerEntry(entry: { name: string; path: string; isDirectory: boolean }) {
+    const objectLabel = entry.isDirectory ? "folder" : "file";
+    const additionalWarning = entry.isDirectory ? " Only empty folders can be deleted." : "";
+    if (!window.confirm(`Delete ${objectLabel} “${entry.name}”? This cannot be undone.${additionalWarning}`)) {
+      return;
+    }
+    try {
+      await api.deleteWorkspaceEntry(entry.path);
+      workspaceExplorerRefreshVersion += 1;
+      noticeText = `Deleted ${entry.name}.`;
+    } catch (error) {
+      errorText = describeError(error);
+    }
+  }
+
   function closeFileTab(tabId: string) {
     fileTabs = fileTabs.filter((tab) => tab.id !== tabId);
     if (activeWorkspaceTabId === tabId) {
@@ -16498,6 +16531,28 @@
       {/if}
     </div>
   </main>
+  {#if !isMobileLayout && workspaceExplorerOpen}
+    {#key workspaceExplorerRefreshVersion}
+      <WorkspaceExplorer
+        readOnly={readOnlyRole}
+        rootPath={workspaceExplorerRootPath}
+        onClose={() => (workspaceExplorerOpen = false)}
+        onDelete={deleteWorkspaceExplorerEntry}
+        onLoadDirectory={(path) => api.browseDirectories(path)}
+        onOpenFile={openFileTab}
+        onRename={renameWorkspaceExplorerEntry}
+      />
+    {/key}
+  {:else if !isMobileLayout}
+    <button
+      class="flex w-9 shrink-0 items-center justify-center border-l border-gray-200 bg-white text-[10px] font-bold uppercase tracking-widest text-gray-400 transition-colors hover:bg-amber-50 hover:text-amber-700"
+      onclick={() => (workspaceExplorerOpen = true)}
+      title="Show Explorer"
+      type="button"
+    >
+      <span class="[writing-mode:vertical-rl]">Explorer</span>
+    </button>
+  {/if}
 </div>
 
 {#if selectedSessionId && activeWorkspaceTabId === "chat" && sessionTurnSearchOpen}

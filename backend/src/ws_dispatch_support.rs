@@ -1065,6 +1065,19 @@ pub(crate) async fn execute_ws_method(
                 .await
                 .map_err(anyhow::Error::from)
         }
+        "workspace/rename" => {
+            let file_path = require_string(&params, "path")?;
+            let new_name = require_string(&params, "newName")?;
+            rename_workspace_entry_payload(state, &file_path, &new_name)
+                .await
+                .map_err(anyhow::Error::from)
+        }
+        "workspace/delete" => {
+            let file_path = require_string(&params, "path")?;
+            delete_workspace_entry_payload(state, &file_path)
+                .await
+                .map_err(anyhow::Error::from)
+        }
         "files/search" => {
             let query = params.get("query").and_then(Value::as_str).unwrap_or("");
             let cwd = params.get("cwd").and_then(Value::as_str);
