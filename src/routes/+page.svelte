@@ -8433,6 +8433,37 @@
     });
   }
 
+  function preferencesForCurrentWebRole(
+    preferences: SessionPreferences
+  ): { preferences: SessionPreferences; constrained: boolean } {
+    if (webRole === "owner") {
+      return { preferences, constrained: false };
+    }
+
+    const constrained =
+      preferences.autoApproveMode === "turn" ||
+      preferences.autoApproveMode === "session" ||
+      preferences.approvalPolicy === "never" ||
+      preferences.approvalPolicy === "on-failure" ||
+      preferences.sandboxMode === "danger-full-access";
+    if (!constrained) {
+      return { preferences, constrained: false };
+    }
+
+    return {
+      preferences: {
+        ...preferences,
+        autoApproveMode: "manual",
+        approvalPolicy:
+          preferences.approvalPolicy === "never" || preferences.approvalPolicy === "on-failure"
+            ? "on-request"
+            : preferences.approvalPolicy,
+        sandboxMode: preferences.sandboxMode === "danger-full-access" ? "workspace-write" : preferences.sandboxMode
+      },
+      constrained: true
+    };
+  }
+
   function setHundredMContextEnabled(enabled: boolean) {
     setPreferencesPatch({
       modelContextWindow: enabled ? HUNDRED_M_CONTEXT_WINDOW : null,
@@ -8529,9 +8560,10 @@
           requestSelectedSessionResync(false);
           return;
         }
+        const requestedPreferences = preferencesForCurrentWebRole(currentBinding.state.preferences);
         const saved = await api.savePreferences(
           sessionId,
-          currentBinding.state.preferences,
+          requestedPreferences.preferences,
           profileIdForSession(sessionId)
         );
         if (saveVersion !== preferenceSaveVersion) {
@@ -8547,6 +8579,9 @@
           applySessionSummaryUpdate(buildSessionSummaryFromConversation(conversation));
         }
         pendingPreferencePatchesBySessionId.delete(sessionId);
+        if (requestedPreferences.constrained) {
+          noticeText = "Saved with safe admin permissions; owner-only session permissions were not used.";
+        }
         if (config) {
           config = applyLocalComposerPreferencesToConfig({
             ...config,
@@ -9435,7 +9470,7 @@
       const activeConversation = materialized.state;
       const attachmentIds = attachmentSnapshot.map((attachment) => attachment.id);
       const selectedSkillsSnapshot = [...(activeConversation.selectedSkills ?? [])];
-      const preferences = activeConversation.preferences;
+      const requestedPreferences = preferencesForCurrentWebRole(activeConversation.preferences);
       const clientUserMessageId = createClientUserMessageId();
       mutationSignature = buildComposerMutationSignature("message", sessionId, prompt, selectedSkillsSnapshot, attachmentIds);
       if (!beginComposerMutation(mutationSignature)) {
@@ -9467,13 +9502,16 @@
           prompt: draftText,
           skills: selectedSkillsSnapshot,
           attachmentIds,
-          preferences,
+          preferences: requestedPreferences.preferences,
           clientUserMessageId,
           profileId: sessionProfileId
         })
       .then(() => {
         scheduleSessionRefresh(80);
         scheduleSelectedSessionStateRefresh(sessionId, 80);
+        if (requestedPreferences.constrained) {
+          noticeText = "Sent with safe admin permissions; owner-only session permissions were not used.";
+        }
       })
         .catch((error) => {
           if (pendingQueueModeSessionKey === sessionStateKey(sessionId, sessionProfileId)) {
