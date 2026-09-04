@@ -189,7 +189,57 @@ pub(crate) async fn handle_session_attachment_api_http(
     session_id: &str,
     attachment_id: &str,
 ) -> Response {
-    if request.method() != Method::DELETE {
+    let is_preview_request = attachment_id
+        .strip_suffix("/preview")
+        .is_some_and(|id| !id.trim().is_empty());
+    let attachment_id = attachment_id.strip_suffix("/preview").unwrap_or(attachment_id);
+
+    if request.method() == Method::GET && is_preview_request {
+        let profile_id =
+            resolve_http_session_profile_id(&state, &auth, session_id, request.uri().query()).await;
+        let attachment = match list_session_attachment_records(&state, &profile_id, session_id).await {
+            Ok(attachments) => attachments.into_iter().find(|entry| entry.id == attachment_id),
+            Err(error) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+        };
+        let Some(attachment) = attachment else {
+            return json_error(StatusCode::NOT_FOUND, "Attachment not found.");
+        };
+        let mime_type = attachment
+            .mime_type
+            .as_deref()
+            .unwrap_or("application/octet-stream")
+            .trim();
+        if attachment.kind.as_deref() != Some("image") || !mime_type.starts_with("image/") {
+            return json_error(StatusCode::NOT_FOUND, "Image preview not found.");
+        }
+        let Some(path) = attachment.path.as_deref() else {
+            return json_error(StatusCode::NOT_FOUND, "Attachment not found.");
+        };
+        let bytes = match tokio_fs::read(path).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return json_error(StatusCode::NOT_FOUND, "Attachment not found.");
+            }
+            Err(error) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+        };
+        let mut response = Response::new(Body::from(bytes));
+        let headers = response.headers_mut();
+        if let Ok(value) = HeaderValue::from_str(mime_type) {
+            headers.insert(header::CONTENT_TYPE, value);
+        }
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=300"));
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("inline"),
+        );
+        headers.insert(
+            header::HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        );
+        return response;
+    }
+
+    if request.method() != Method::DELETE || is_preview_request {
         return json_error(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed.");
     }
     if !role_has_admin_access(auth.role) {

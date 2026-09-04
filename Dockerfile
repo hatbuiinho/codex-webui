@@ -39,6 +39,9 @@ FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 
 ARG CODEX_VERSION=0.153.0
 
+ENV NPM_CONFIG_PREFIX=/home/node/.local \
+    PATH="/home/node/.local/bin:${PATH}"
+
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         bash \
@@ -50,9 +53,14 @@ RUN apt-get update \
         ripgrep \
         tini \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install --global "@openai/codex@${CODEX_VERSION}" \
-    && mkdir -p /app/build /app/scripts /data /workspace /home/node/.codex \
-    && chown -R node:node /app /data /workspace /home/node/.codex
+    && mkdir -p /app/build /app/scripts /data /workspace /home/node/.codex /home/node/.local /home/node/.npm \
+    && chown -R node:node /app /data /workspace /home/node/.codex /home/node/.local /home/node/.npm
+
+USER node
+
+# Keep the CLI under node's writable npm prefix. The in-app update action runs as
+# this same unprivileged user, so npm can replace the package without root access.
+RUN npm install --global "@openai/codex@${CODEX_VERSION}"
 
 WORKDIR /app
 
@@ -63,12 +71,10 @@ COPY --from=builder --chown=node:node /app/scripts/hash-password.mjs ./scripts/h
 ENV HOST=0.0.0.0 \
     PORT=4173 \
     CODEX_HOME=/home/node/.codex \
-    CODEX_WEBUI_CODEX_BIN=/usr/local/bin/codex \
+    CODEX_WEBUI_CODEX_BIN=/home/node/.local/bin/codex \
     CODEX_WEBUI_DATA_DIR=/data \
     CODEX_WEBUI_ALLOWED_ROOTS=/workspace \
     CODEX_WEBUI_BASE_PATH=""
-
-USER node
 
 EXPOSE 4173
 

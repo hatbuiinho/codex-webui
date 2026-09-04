@@ -978,6 +978,11 @@ export const api = {
     });
   },
 
+  attachmentPreviewUrl(sessionId: string, attachmentId: string, profileId: string | null = null) {
+    const query = profileId ? `?profileId=${encodeURIComponent(profileId)}` : "";
+    return apiPath(`/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/preview${query}`);
+  },
+
   deleteAttachment(sessionId: string, attachmentId: string, profileId: string | null = null) {
     return ws.request<{ ok: true }>("attachments/delete", {
       sessionId,

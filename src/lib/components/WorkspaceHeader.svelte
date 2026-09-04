@@ -10,6 +10,8 @@
     Menu,
     MessageSquare,
     Monitor,
+    PanelLeftClose,
+    PanelLeftOpen,
     Pencil,
     Pin,
     Plus,
@@ -64,6 +66,8 @@
     ui,
     searchOpenLabel,
     onOpenMobileSidebar,
+    sidebarCollapsed = false,
+    onToggleSidebar,
     onSaveTitle,
     onEditTags,
     onToggleSearch,
@@ -107,6 +111,8 @@
     ui: UiCopy;
     searchOpenLabel: string;
     onOpenMobileSidebar: () => void;
+    sidebarCollapsed?: boolean;
+    onToggleSidebar: () => void;
     onSaveTitle: () => void | Promise<void>;
     onEditTags: () => void | Promise<void>;
     onToggleSearch: () => void;
@@ -202,6 +208,20 @@
     {#if isMobileLayout}
       <button class="-ml-2 rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900" onclick={onOpenMobileSidebar} type="button">
         <Menu size={20} />
+      </button>
+    {:else}
+      <button
+        aria-label={sidebarCollapsed ? "Open sidebar" : "Close sidebar"}
+        class="-ml-2 rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900"
+        onclick={onToggleSidebar}
+        title={sidebarCollapsed ? "Open sidebar" : "Close sidebar"}
+        type="button"
+      >
+        {#if sidebarCollapsed}
+          <PanelLeftOpen size={20} />
+        {:else}
+          <PanelLeftClose size={20} />
+        {/if}
       </button>
     {/if}
 

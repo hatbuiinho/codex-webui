@@ -15,7 +15,7 @@ services:
       PORT: 4173
       # One shared profile: conversations persist while the owner rotates ChatGPT accounts.
       CODEX_HOME: /home/node/.codex
-      CODEX_WEBUI_CODEX_BIN: /usr/local/bin/codex
+      CODEX_WEBUI_CODEX_BIN: /home/node/.local/bin/codex
       CODEX_WEBUI_DATA_DIR: /data
       CODEX_WEBUI_ALLOWED_ROOTS: /workspace
       CODEX_WEBUI_BASE_PATH: ""

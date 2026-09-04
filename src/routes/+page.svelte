@@ -41,7 +41,10 @@
     Keyboard,
     Monitor,
     Download,
-    UserCog
+    UserCog,
+    PanelLeftClose,
+    PanelLeftOpen,
+    Brain
   } from "lucide-svelte";
   import { onMount, tick } from "svelte";
   import { fly, slide } from "svelte/transition";
@@ -189,6 +192,7 @@
     | `file:${string}`
     | `terminal:${string}`;
   type ComposerSettingsTabId = "session" | "security" | "skills";
+  type ComposerSettingsSessionView = "quick" | "model" | "reasoning" | "speed" | "advanced";
   type TranscriptScrollAnchor = {
     turnId: string;
     viewportOffset: number;
@@ -399,6 +403,7 @@
   let composerSettingsOpen = $state(false);
   let composerSettingsTab = $state<ComposerSettingsTabId>("session");
   let composerSettingsAnchor = $state<ComposerSettingsTabId>("session");
+  let composerSettingsSessionView = $state<ComposerSettingsSessionView>("quick");
   let catalogLoading = $state(false);
   let composerSkillQuery = $state("");
   let draftSelectedSkills = $state<SelectedSkill[]>([]);
@@ -445,6 +450,7 @@
   let draftPersistencePaused = $state(false);
   let mobileSidebarOpen = $state(false);
   let isMobileLayout = $state(false);
+  let sidebarCollapsed = $state(false);
   let optimisticMessage = $state<OptimisticMessageState | null>(null);
   let optimisticQueuedItemsBySessionId = $state<Record<string, SessionQueueItem[]>>({});
   let sessionQueueSnapshotsBySessionId = $state<Record<string, SessionQueuePayload>>({});
@@ -591,6 +597,7 @@
   const sessionSavedFilterParamKey = "sessionSavedFilter";
   const notificationPromptStorageKey = "codex-webui.notifications.permission-prompted";
   const sendOnEnterPreferenceStorageKey = "codex-webui.composer.send-on-enter";
+  const sidebarCollapsedStorageKey = "codex-webui.sidebar-collapsed";
   let loginHcaptchaScriptPromise: Promise<void> | null = null;
 
   const ui = $derived.by(() => {
@@ -3135,6 +3142,10 @@
           sessionTurnSearchInputElement?.select();
         });
       }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "b" && !isMobileLayout) {
+        event.preventDefault();
+        toggleDesktopSidebar();
+      }
     };
     const closeComposerSettingsOnOutsidePointer = (event: PointerEvent) => {
       if (!composerSettingsOpen) {
@@ -3253,6 +3264,11 @@
         });
     };
     syncMobileLayout();
+    try {
+      sidebarCollapsed = window.localStorage.getItem(sidebarCollapsedStorageKey) === "true";
+    } catch {
+      sidebarCollapsed = false;
+    }
     syncPwaInstallState();
     mobileQuery.addEventListener("change", syncMobileLayout);
     if (typeof displayModeQuery.addEventListener === "function") {
@@ -4586,9 +4602,7 @@
     let turnId = initialTurnId;
     const recordHeight = (entry?: ResizeObserverEntry) => {
       const borderBoxSize = entry?.borderBoxSize;
-      const nextHeight = Array.isArray(borderBoxSize)
-        ? borderBoxSize[0]?.blockSize
-        : borderBoxSize?.blockSize;
+      const nextHeight = borderBoxSize?.[0]?.blockSize;
       queueTranscriptTurnMeasurement(turnId, nextHeight ?? node.getBoundingClientRect().height);
     };
     const observer =
@@ -8286,6 +8300,19 @@
     mobileSidebarOpen = false;
   }
 
+  function toggleDesktopSidebar() {
+    if (isMobileLayout) {
+      openMobileSidebar();
+      return;
+    }
+    sidebarCollapsed = !sidebarCollapsed;
+    try {
+      window.localStorage.setItem(sidebarCollapsedStorageKey, String(sidebarCollapsed));
+    } catch {
+      // A blocked storage area should not prevent the navigation control from working.
+    }
+  }
+
   async function createSession() {
     if (readOnlyRole) {
       errorText = m.error_forbidden_role();
@@ -10255,6 +10282,17 @@
     } catch (error) {
       errorText = describeError(error);
     }
+  }
+
+  function draftAttachmentPreviewUrl(attachment: AttachmentRecord) {
+    if (attachment.kind !== "image" || !selectedSessionId) {
+      return "";
+    }
+    return api.attachmentPreviewUrl(
+      selectedSessionId,
+      attachment.id,
+      profileIdForSession(selectedSessionId)
+    );
   }
 
   async function interruptTurn() {
@@ -14709,10 +14747,33 @@
       "h-full border-r border-gray-200 transition-all duration-300",
       isMobileLayout
         ? "fixed inset-y-0 left-0 z-[130] w-[min(22rem,calc(100vw-1.5rem))] max-w-[calc(100vw-1.5rem)] shadow-2xl"
-        : "w-[22rem] min-w-[22rem] max-w-[24rem] flex-shrink-0"
+        : sidebarCollapsed
+          ? "w-16 min-w-16 max-w-16 flex-shrink-0"
+          : "w-[22rem] min-w-[22rem] max-w-[24rem] flex-shrink-0"
     ]}
   >
-    <SessionSidebar
+    {#if !isMobileLayout && sidebarCollapsed}
+      <nav aria-label="Collapsed sidebar" class="flex h-full flex-col items-center bg-gray-50/80 py-3">
+        <button class="ui-animated-button ui-animated-button--icon inline-flex h-10 w-10 items-center justify-center rounded-xl text-amber-600 transition-all hover:bg-amber-50" onclick={toggleDesktopSidebar} title="Open sidebar" type="button">
+          <PanelLeftOpen size={20} />
+        </button>
+        <div class="mt-4 flex flex-col items-center gap-2">
+          <button class="ui-animated-button ui-animated-button--icon inline-flex h-10 w-10 items-center justify-center rounded-xl text-gray-500 transition-all hover:bg-white hover:text-amber-600 disabled:cursor-not-allowed disabled:opacity-50" disabled={readOnlyRole} onclick={() => void createSession()} title={ui.newThread} type="button">
+            <Plus size={20} />
+          </button>
+          <button class={`ui-animated-button ui-animated-button--icon inline-flex h-10 w-10 items-center justify-center rounded-xl transition-all ${workspaceExplorerOpen ? "bg-amber-50 text-amber-700" : "text-gray-500 hover:bg-white hover:text-amber-600"}`} onclick={() => (workspaceExplorerOpen = !workspaceExplorerOpen)} title="Workspace explorer" type="button">
+            <Layout size={19} />
+          </button>
+          <button class={`ui-animated-button ui-animated-button--icon inline-flex h-10 w-10 items-center justify-center rounded-xl transition-all ${activeWorkspaceTabId === "settings" ? "bg-amber-50 text-amber-700" : "text-gray-500 hover:bg-white hover:text-amber-600"}`} onclick={() => openSettingsTab()} title={ui.settings} type="button">
+            <Settings size={19} />
+          </button>
+        </div>
+        <button class="mt-auto inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-500 shadow-sm" onclick={toggleDesktopSidebar} title="Open sidebar" type="button">
+          <User size={17} />
+        </button>
+      </nav>
+    {:else}
+      <SessionSidebar
       account={config?.account ?? null}
       {accountLoginFlow}
       webRole={webRole}
@@ -14868,7 +14929,8 @@
         void deleteAccountProfile(profileId, label);
       }}
       selectedId={selectedSessionId}
-    />
+      />
+    {/if}
   </aside>
 
   <!-- Main Content -->
@@ -14881,6 +14943,7 @@
       bind:workspaceMenuOpen={workspaceMenuOpen}
       contextUsage={getContextUsageIndicator()}
       {isMobileLayout}
+      {sidebarCollapsed}
       {running}
       {selectedSessionId}
       {selectedSessionSummary}
@@ -14901,6 +14964,7 @@
       onOpenGitTab={openGitTab}
       onOpenMemoryTab={openMemoryTab}
       onOpenMobileSidebar={openMobileSidebar}
+      onToggleSidebar={toggleDesktopSidebar}
       onOpenSettingsTab={openSettingsTab}
       onOpenTasksTab={openTasksTab}
       onSaveTitle={() => void saveTitle()}
@@ -15851,8 +15915,31 @@
                   {/if}
                   
                   {#if draftAttachments.length > 0}
-                    <div class="flex flex-wrap gap-1.5 px-3.5 pb-1.5">
-                      {#each draftAttachments as attachment (attachment.id)}<button class="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1 text-[10px] font-bold text-gray-600 transition-all hover:border-red-200 hover:bg-red-50 hover:text-red-600 group disabled:cursor-not-allowed disabled:opacity-60" disabled={readOnlyRole} onclick={() => void removeDraftAttachment(attachment.id)} type="button"><FileText size={11} /><span>{attachment.originalName}</span><X size={11} class="opacity-0 transition-opacity group-hover:opacity-100" /></button>{/each}
+                    <div class="flex flex-wrap gap-2 px-3.5 pb-2">
+                      {#each draftAttachments as attachment (attachment.id)}
+                        {#if attachment.kind === "image"}
+                          <div class="group relative h-16 w-16 overflow-hidden rounded-xl border border-gray-200 bg-gray-100 shadow-sm">
+                            <img
+                              alt={attachment.originalName}
+                              class="h-full w-full object-cover"
+                              draggable="false"
+                              src={draftAttachmentPreviewUrl(attachment)}
+                            />
+                            <button
+                              aria-label={`Remove ${attachment.originalName}`}
+                              class="absolute right-1 top-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-white/70 bg-gray-900/75 text-white opacity-100 shadow-sm transition-all hover:bg-red-600 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                              disabled={readOnlyRole}
+                              onclick={() => void removeDraftAttachment(attachment.id)}
+                              title={attachment.originalName}
+                              type="button"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        {:else}
+                          <button class="group flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1 text-[10px] font-bold text-gray-600 transition-all hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-60" disabled={readOnlyRole} onclick={() => void removeDraftAttachment(attachment.id)} type="button"><FileText size={11} /><span>{attachment.originalName}</span><X size={11} class="opacity-0 transition-opacity group-hover:opacity-100" /></button>
+                        {/if}
+                      {/each}
                     </div>
                   {/if}
 
@@ -15877,6 +15964,7 @@
 
                             composerSettingsAnchor = "session";
                             composerSettingsTab = "session";
+                            composerSettingsSessionView = "quick";
                             composerSettingsOpen = true;
                           }}
                           type="button"
@@ -15941,11 +16029,11 @@
                   <div
                     bind:this={composerSettingsPopoverElement}
                     use:portal
-                    class="floating-popover composer-popover composer-settings-popover w-[19rem] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain rounded-xl border p-2.5 sm:rounded-2xl sm:p-3.5"
+                    class="floating-popover composer-popover composer-settings-popover max-h-[min(36rem,calc(100vh-1rem))] w-[19rem] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain rounded-xl border p-2.5 sm:w-[20rem] sm:rounded-2xl sm:p-3.5"
                     data-positioned={composerSettingsPopoverStyle.includes("top:")}
                     style={composerSettingsPopoverStyle || "opacity:0;pointer-events:none;"}
                   >
-                    <div class="composer-settings-popover__header mb-2 flex items-center justify-between border-b border-gray-100 pb-2 sm:mb-2.5 sm:pb-2.5">
+                    <div class="composer-settings-popover__header sticky top-[-0.625rem] z-10 -mx-2.5 mb-2 flex items-center justify-between border-b border-gray-100 bg-white/95 px-2.5 pb-2 pt-2.5 backdrop-blur sm:top-[-0.875rem] sm:-mx-3.5 sm:mb-2.5 sm:px-3.5 sm:pb-2.5 sm:pt-3.5">
                       <div>
                         <h3 class="text-xs font-bold uppercase tracking-widest text-gray-400">{ui.settings}</h3>
                         <p class="mt-1 text-[11px] font-medium text-gray-500">
@@ -15971,6 +16059,7 @@
                         onclick={() => {
                           composerSettingsAnchor = "session";
                           composerSettingsTab = "session";
+                          composerSettingsSessionView = "quick";
                         }}
                         role="tab"
                         type="button"
@@ -16010,7 +16099,57 @@
                         {ui.securitySession}
                       </button>
                     </div>
-                    {#if composerSettingsTab === "session"}
+                    {#if composerSettingsTab === "session" && composerSettingsSessionView !== "advanced"}
+                      <div class="space-y-1" role="tabpanel">
+                        {#if composerSettingsSessionView === "quick"}
+                          <p class="px-2 pb-1 text-[11px] font-medium text-gray-500">{composerSettingsSummary.model} · {conversation.preferences.effort ?? "medium"}</p>
+                          <button class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-gray-50" disabled={readOnlyRole} onclick={() => (composerSettingsSessionView = "model")} type="button">
+                            <Cpu size={16} class="text-gray-400" />
+                            <span class="min-w-0 flex-1"><span class="block text-sm font-semibold text-gray-800">{ui.model}</span><span class="block truncate text-[11px] text-gray-500">{composerSettingsSummary.model}</span></span>
+                            <ChevronDown size={16} class="-rotate-90 text-gray-400" />
+                          </button>
+                          <button class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-gray-50" disabled={readOnlyRole} onclick={() => (composerSettingsSessionView = "reasoning")} type="button">
+                            <Brain size={16} class="text-gray-400" />
+                            <span class="min-w-0 flex-1"><span class="block text-sm font-semibold text-gray-800">{m.reasoning()}</span><span class="block truncate text-[11px] text-gray-500">{conversation.preferences.effort ?? "medium"}</span></span>
+                            <ChevronDown size={16} class="-rotate-90 text-gray-400" />
+                          </button>
+                          <button class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-gray-50" disabled={readOnlyRole} onclick={() => (composerSettingsSessionView = "speed")} type="button">
+                            <Zap size={16} class="text-gray-400" />
+                            <span class="min-w-0 flex-1"><span class="block text-sm font-semibold text-gray-800">{ui.speed}</span><span class="block truncate text-[11px] text-gray-500">{getSpeedOptionLabel(conversation.preferences.speed ?? "auto")}</span></span>
+                            <ChevronDown size={16} class="-rotate-90 text-gray-400" />
+                          </button>
+                          <div class="my-1 border-t border-gray-100"></div>
+                          <button class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-gray-600 transition-colors hover:bg-gray-50" onclick={() => (composerSettingsSessionView = "advanced")} type="button">
+                            <Settings size={16} class="text-gray-400" />
+                            <span class="min-w-0 flex-1"><span class="block text-sm font-semibold text-gray-800">More settings</span><span class="block text-[11px] text-gray-500">Context, plan, language and send key</span></span>
+                            <ChevronDown size={16} class="-rotate-90 text-gray-400" />
+                          </button>
+                        {:else}
+                          <button class="mb-1 inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800" onclick={() => (composerSettingsSessionView = "quick")} type="button">
+                            <ChevronDown size={15} class="rotate-90" /> Back
+                          </button>
+                          {#if composerSettingsSessionView === "model"}
+                            <p class="px-2 pb-1 text-xs font-bold text-gray-800">{ui.model}</p>
+                            <button class={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-gray-50 ${!conversation.preferences.model ? "bg-gray-50 font-semibold" : ""}`} disabled={readOnlyRole} onclick={() => { setPreference("model", null); composerSettingsSessionView = "quick"; }} type="button"><span>{ui.autoDefault}</span>{#if !conversation.preferences.model}<CheckCircle2 size={16} class="text-amber-600" />{/if}</button>
+                            {#each config?.models ?? [] as model (model.id)}
+                              <button class={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-gray-50 ${conversation.preferences.model === model.id ? "bg-gray-50 font-semibold" : ""}`} disabled={readOnlyRole} onclick={() => { setPreference("model", model.id); composerSettingsSessionView = "quick"; }} type="button"><span class="truncate">{model.displayName}</span>{#if conversation.preferences.model === model.id}<CheckCircle2 size={16} class="shrink-0 text-amber-600" />{/if}</button>
+                            {/each}
+                          {:else if composerSettingsSessionView === "reasoning"}
+                            <p class="px-2 pb-1 text-xs font-bold text-gray-800">{m.reasoning()}</p>
+                            {#each reasoningOptions as option (option)}
+                              <button class={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm capitalize transition-colors hover:bg-gray-50 ${(conversation.preferences.effort ?? reasoningOptions[0]) === option ? "bg-gray-50 font-semibold" : ""}`} disabled={readOnlyRole} onclick={() => { setPreference("effort", option as SessionPreferences["effort"]); composerSettingsSessionView = "quick"; }} type="button"><span>{option}</span>{#if (conversation.preferences.effort ?? reasoningOptions[0]) === option}<CheckCircle2 size={16} class="text-amber-600" />{/if}</button>
+                            {/each}
+                          {:else if composerSettingsSessionView === "speed"}
+                            <p class="px-2 pb-1 text-xs font-bold text-gray-800">{ui.speed}</p>
+                            {#each speedOptions as option (option)}
+                              <button class={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-gray-50 ${(conversation.preferences.speed ?? "auto") === option ? "bg-gray-50 font-semibold" : ""}`} disabled={readOnlyRole} onclick={() => { setSpeedPreference(option); composerSettingsSessionView = "quick"; }} type="button"><span>{getSpeedOptionLabel(option)}</span>{#if (conversation.preferences.speed ?? "auto") === option}<CheckCircle2 size={16} class="text-amber-600" />{/if}</button>
+                            {/each}
+                          {/if}
+                        {/if}
+                      </div>
+                    {/if}
+                    {#if composerSettingsTab === "session" && composerSettingsSessionView === "advanced"}
+                      <button class="mb-2 inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800" onclick={() => (composerSettingsSessionView = "quick")} type="button"><ChevronDown size={15} class="rotate-90" /> Back to quick settings</button>
                       <div class="grid grid-cols-1 gap-3" role="tabpanel">
                         <div class="space-y-1">
                           <label class="px-1 text-[10px] font-bold uppercase tracking-widest text-gray-400" for="composer-model-select">{ui.model}</label>
@@ -16343,7 +16482,7 @@
                           </div>
                         {/if}
                       </div>
-                    {:else}
+                    {:else if composerSettingsTab === "security"}
                       <div class="space-y-4" role="tabpanel">
                         <div class="space-y-1">
                           <label class="px-1 text-[10px] font-bold uppercase tracking-widest text-gray-400" for="composer-approval-select">{ui.approvalMode}</label>
