@@ -46,9 +46,9 @@ services:
       CODEX_WEBUI_ENABLE_SYSTEM_SHUTDOWN: "false"
       CODEX_WEBUI_FORCE_YOLO: "false"
     volumes:
-      - ./data/codex:/home/node/.codex
-      - ./data/webui:/data
-      - ./workspace:/workspace
+      - /mnt/data/comic/codex:/home/node/.codex
+      - /mnt/data/comic/webui:/data
+      - /mnt/data/comic/workspace:/workspace
     expose:
       - "4173"
     security_opt:
