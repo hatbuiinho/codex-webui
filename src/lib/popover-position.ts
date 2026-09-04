@@ -1,4 +1,4 @@
-type PopoverPlacement = "above" | "below" | "auto";
+type PopoverPlacement = "above" | "below" | "left" | "right" | "auto";
 type PopoverAlign = "start" | "end" | "center";
 
 type PopoverPositionOptions = {
@@ -34,6 +34,39 @@ export function anchoredPopoverStyle(
   const minimumWidth = Math.min(options.minWidth ?? 240, availableWidth);
   const preferredWidth = options.preferredWidth ?? (popoverRect.width || triggerRect.width);
   const width = clamp(preferredWidth, minimumWidth, Math.min(options.maxWidth ?? availableWidth, availableWidth));
+
+  if (options.placement === "left" || options.placement === "right") {
+    const leftSpace = triggerRect.left - viewportLeft - gap - margin;
+    const rightSpace = viewportLeft + viewportWidth - triggerRect.right - gap - margin;
+    const placement =
+      options.placement === "right" && (rightSpace >= width || rightSpace >= leftSpace)
+        ? "right"
+        : options.placement === "left" && (leftSpace >= width || leftSpace >= rightSpace)
+          ? "left"
+          : rightSpace >= leftSpace
+            ? "right"
+            : "left";
+    const availableHeight = Math.max(0, viewportHeight - margin * 2);
+    const renderedHeight = Math.min(popoverRect.height, availableHeight);
+    let left = placement === "right" ? triggerRect.right + gap : triggerRect.left - gap - width;
+    left = clamp(left, viewportLeft + margin, viewportLeft + viewportWidth - width - margin);
+    let top = triggerRect.top;
+    if (options.align === "end") {
+      top = triggerRect.bottom - renderedHeight;
+    } else if (options.align === "center") {
+      top = triggerRect.top + (triggerRect.height - renderedHeight) / 2;
+    }
+    top = clamp(top, viewportTop + margin, viewportTop + viewportHeight - renderedHeight - margin);
+    return [
+      `top:${Math.round(top)}px`,
+      `left:${Math.round(left)}px`,
+      `width:${Math.round(width)}px`,
+      `max-height:${Math.round(availableHeight)}px`,
+      "z-index:var(--z-popover)",
+      "opacity:1",
+      "pointer-events:auto"
+    ].join(";");
+  }
 
   let left = triggerRect.left;
   if (options.align === "end") {

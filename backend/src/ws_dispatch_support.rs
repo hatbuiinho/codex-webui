@@ -972,6 +972,14 @@ pub(crate) async fn execute_ws_method(
                 .await
                 .map_err(anyhow::Error::from)
         }
+        "session/delete" => {
+            let session_id = require_session_id(&params, "sessionId")?;
+            let profile_id =
+                ws_request_profile_id_for_session(state, auth, &params, &session_id).await?;
+            delete_session_payload(state, &profile_id, &session_id)
+                .await
+                .map_err(anyhow::Error::from)
+        }
         "turn/send" => {
             let session_id = require_session_id(&params, "sessionId")?;
             let profile_id =

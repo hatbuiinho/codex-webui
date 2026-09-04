@@ -1072,3 +1072,124 @@ pub(crate) async fn unarchive_session_payload(
         "session": session
     }))
 }
+
+pub(crate) async fn delete_session_payload(
+    state: &AppState,
+    profile_id: &str,
+    session_id: &str,
+) -> ApiResult<Value> {
+    let (resolved_profile_id, profile) = resolve_runtime_profile_entry(&state.config, profile_id);
+    let session_lock = session_operation_lock(state, resolved_profile_id, session_id).await;
+    let _session_guard = session_lock.lock().await;
+    let runtime_key = runtime_session_key(resolved_profile_id, session_id);
+    if state.active_turns.lock().await.contains_key(&runtime_key)
+        || state.pending_turn_starts.lock().await.contains(&runtime_key)
+        || state.queue_dispatching.lock().await.contains(&runtime_key)
+    {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "Stop the running session before deleting it.",
+        ));
+    }
+
+    // Codex exposes archive/unarchive but no delete RPC. Archive an active thread
+    // first so the app-server releases it, then remove only the rollout file that
+    // was discovered inside this profile's managed session roots.
+    let mut archived = false;
+    let mut candidate = None;
+    for is_archived in [false, true] {
+        if let Some(entry) = list_rollout_candidates_payload(state, resolved_profile_id, is_archived)
+            .await?
+            .into_iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some(session_id))
+        {
+            archived = is_archived;
+            candidate = Some(entry);
+            break;
+        }
+    }
+    if candidate.is_none() {
+        return Err(api_error(StatusCode::NOT_FOUND, "Session rollout was not found."));
+    }
+
+    if !archived {
+        app_server_client_for_session(state, resolved_profile_id, session_id)
+            .await
+            .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("Failed to connect to codex app-server: {error}")))?
+            .request("thread/archive", json!({ "threadId": session_id }))
+            .await
+            .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("Failed to prepare the session for deletion: {error}")))?;
+        invalidate_session_listing_cache(state, resolved_profile_id, None).await;
+        candidate = list_rollout_candidates_payload(state, resolved_profile_id, true)
+            .await?
+            .into_iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some(session_id));
+    }
+
+    let rollout_path = candidate
+        .as_ref()
+        .and_then(|entry| entry.get("path").and_then(Value::as_str))
+        .map(PathBuf::from)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Archived session rollout was not found."))?;
+    let archived_root = profile.codex_home.join("archived_sessions");
+    rollout_path.strip_prefix(&archived_root).map_err(|_| {
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Session rollout path escaped the profile archive directory.",
+        )
+    })?;
+    tokio_fs::remove_file(&rollout_path)
+        .await
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to delete session rollout: {error}")))?;
+
+    let index_path = profile.codex_home.join("session_index.jsonl");
+    if let Ok(raw_index) = tokio_fs::read_to_string(&index_path).await {
+        let retained_lines = raw_index
+            .lines()
+            .filter(|line| {
+                !serde_json::from_str::<Value>(line)
+                    .ok()
+                    .and_then(|entry| entry.get("id").and_then(Value::as_str).map(str::to_string))
+                    .is_some_and(|id| id == session_id)
+            })
+            .collect::<Vec<_>>();
+        let bytes = if retained_lines.is_empty() { Vec::new() } else { format!("{}\n", retained_lines.join("\n")).into_bytes() };
+        write_file_atomically(&index_path, bytes)
+            .await
+            .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to update session index: {error}")))?;
+    }
+
+    let uploads_dir = session_uploads_dir(state, resolved_profile_id, session_id);
+    if tokio_fs::metadata(&uploads_dir).await.is_ok() {
+        tokio_fs::remove_dir_all(&uploads_dir)
+            .await
+            .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to delete session attachments: {error}")))?;
+    }
+
+    let ui_state_sections = [
+        "sessionMetaByThreadId",
+        "preferencesByThreadId",
+        "skillsByThreadId",
+        "draftsByThreadId",
+        "queuesByThreadId",
+        "goalsByThreadId",
+        "highlightsByThreadId",
+        "languageBridgeByThreadId",
+    ];
+    with_ui_state_write(state, resolved_profile_id, |ui_state| {
+        for section in ui_state_sections {
+            if let Some(entries) = ui_state.get_mut(section).and_then(Value::as_object_mut) {
+                entries.remove(session_id);
+            }
+        }
+        if let Some(statuses) = ui_state.get_mut("runtimeStatusByThreadId").and_then(Value::as_object_mut) {
+            statuses.remove(session_id);
+        }
+        Ok(())
+    })
+    .await?;
+
+    clear_app_server_assignments_for_sessions(state, resolved_profile_id, &[session_id.to_string()]).await;
+    invalidate_session_lists(state, resolved_profile_id).await;
+    Ok(json!({ "ok": true }))
+}

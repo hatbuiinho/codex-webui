@@ -887,6 +887,10 @@ export const api = {
     return ws.request<{ ok: true; session: SessionSummary }>("session/unarchive", { sessionId, profileId });
   },
 
+  deleteSession(sessionId: string, profileId: string | null = null) {
+    return ws.request<{ ok: true }>("session/delete", { sessionId, profileId });
+  },
+
   getAccount() {
     return ws.request<{
       account: Record<string, unknown>;

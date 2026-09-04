@@ -193,6 +193,7 @@
     | `terminal:${string}`;
   type ComposerSettingsTabId = "session" | "security" | "skills";
   type ComposerSettingsSessionView = "quick" | "model" | "reasoning" | "speed" | "advanced";
+  type ComposerSettingsChildPopover = "model" | "reasoning" | "speed" | null;
   type TranscriptScrollAnchor = {
     turnId: string;
     viewportOffset: number;
@@ -404,6 +405,7 @@
   let composerSettingsTab = $state<ComposerSettingsTabId>("session");
   let composerSettingsAnchor = $state<ComposerSettingsTabId>("session");
   let composerSettingsSessionView = $state<ComposerSettingsSessionView>("quick");
+  let composerSettingsChildPopover = $state<ComposerSettingsChildPopover>(null);
   let catalogLoading = $state(false);
   let composerSkillQuery = $state("");
   let draftSelectedSkills = $state<SelectedSkill[]>([]);
@@ -1789,6 +1791,11 @@
   let composerSettingsTriggerElement = $state<HTMLButtonElement | undefined>(undefined);
   let composerSettingsPopoverElement = $state<HTMLDivElement | undefined>(undefined);
   let composerSettingsPopoverStyle = $state("");
+  let composerModelTriggerElement = $state<HTMLButtonElement | undefined>(undefined);
+  let composerReasoningTriggerElement = $state<HTMLButtonElement | undefined>(undefined);
+  let composerSpeedTriggerElement = $state<HTMLButtonElement | undefined>(undefined);
+  let composerSettingsChildPopoverElement = $state<HTMLDivElement | undefined>(undefined);
+  let composerSettingsChildPopoverStyle = $state("");
   let composerSecurityTriggerElement = $state<HTMLButtonElement | undefined>(undefined);
   let sessionTurnSearchTriggerElement = $state<HTMLButtonElement | undefined>(undefined);
   let sessionTurnSearchPopoverElement = $state<HTMLDivElement | undefined>(undefined);
@@ -3131,6 +3138,10 @@
     };
     const handleGlobalKeydown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && composerSettingsOpen) {
+        if (composerSettingsChildPopover) {
+          composerSettingsChildPopover = null;
+          return;
+        }
         composerSettingsOpen = false;
         return;
       }
@@ -3155,12 +3166,14 @@
       if (
         target &&
         (composerSettingsPopoverElement?.contains(target) ||
+          composerSettingsChildPopoverElement?.contains(target) ||
           composerSettingsTriggerElement?.contains(target) ||
           composerSecurityTriggerElement?.contains(target))
       ) {
         return;
       }
       composerSettingsOpen = false;
+      composerSettingsChildPopover = null;
     };
     const syncPwaInstallState = () => {
       const installed =
@@ -3782,10 +3795,13 @@
   $effect(() => {
     if (!composerSettingsOpen) {
       composerSettingsPopoverStyle = "";
+      composerSettingsChildPopover = null;
+      composerSettingsChildPopoverStyle = "";
       return;
     }
     const _composerSettingsTab = composerSettingsTab;
     const _composerSettingsAnchor = composerSettingsAnchor;
+    const _composerSettingsChildPopover = composerSettingsChildPopover;
     void updateComposerSettingsPopoverPosition();
   });
 
@@ -6147,9 +6163,7 @@
       webRole = authSession.role ?? "admin";
       loginMessage = "";
       ensureGlobalStreamSubscription();
-      if (webRole === "owner") {
-        void refreshRuntimeStatus(false, { silent: true });
-      }
+      void refreshRuntimeStatus(false, { silent: true });
 
       readSessionListStateFromUrl();
       const requestedSessionId = getRequestedSessionIdFromUrl();
@@ -6164,7 +6178,9 @@
       }
       void refreshAccountState(false);
       void refreshNotifications();
-      void refreshTerminals();
+      if (webRole === "owner") {
+        void refreshTerminals();
+      }
       loading = false;
 
       if (requestedSessionId) {
@@ -7730,7 +7746,7 @@
 
     ensureGlobalStreamSubscription();
     void refreshRuntimeStatus(false, { silent: true });
-    if (activeWorkspaceTabId.startsWith("terminal:")) {
+    if (webRole === "owner" && activeWorkspaceTabId.startsWith("terminal:")) {
       void refreshTerminals();
     }
     recoverFromWebSocketResync();
@@ -10316,21 +10332,59 @@
       errorText = m.error_forbidden_role();
       return;
     }
+    const previous = session;
     try {
       if (showArchivedSessions || session.archived) {
+        applySessionSummaryUpdate({ ...session, archived: false, updatedAt: Date.now() });
         const response = await api.unarchiveSession(session.id, profileIdForSession(session.id));
         applySessionSummaryUpdate(response.session);
         noticeText = m.session_restored_notice();
       } else {
+        applySessionSummaryUpdate({ ...session, archived: true, updatedAt: Date.now() });
         await api.archiveSession(session.id, profileIdForSession(session.id));
-        applySessionSummaryUpdate({
-          ...session,
-          archived: true,
-          updatedAt: Date.now()
-        });
         noticeText = m.session_archived_notice();
       }
     } catch (error) {
+      applySessionSummaryUpdate(previous);
+      errorText = describeError(error);
+    }
+  }
+
+  async function deleteSessionFromSidebar(session: SessionSummary) {
+    if (readOnlyRole) {
+      errorText = m.error_forbidden_role();
+      return;
+    }
+    if (!window.confirm(`Delete thread “${session.name || session.preview || session.id}”? This permanently removes its conversation and attachments.`)) {
+      return;
+    }
+    const profileId = profileIdForSession(session.id);
+    const deletedKey = sessionSummaryKey(session);
+    const deletingSelectedSession =
+      selectedSessionId === session.id &&
+      (!selectedSessionProfileId || !profileId || selectedSessionProfileId === profileId);
+    setSessionsStable(sessions.filter((entry) => sessionSummaryKey(entry) !== deletedKey));
+    if (deletingSelectedSession) {
+      sessionSelectionVersion += 1;
+      disconnectStream();
+      clearHydrationRefresh();
+      clearSelectedSessionCompletionRefreshes();
+      conversation = null;
+      selectedSessionId = null;
+      selectedSessionProfileId = null;
+      draft = "";
+      draftAttachments = [];
+      titleDraft = "";
+      syncSelectedSessionInUrl(null);
+    }
+    try {
+      await api.deleteSession(session.id, profileId);
+      noticeText = "Thread deleted.";
+    } catch (error) {
+      applySessionSummaryUpdate(session);
+      if (deletingSelectedSession) {
+        void selectSession(session.id, profileId);
+      }
       errorText = describeError(error);
     }
   }
@@ -10522,12 +10576,20 @@
       return;
     }
 
+    const sessionId = selectedSessionId;
+    const previousSummary = selectedSessionSummary;
     try {
-      await api.archiveSession(selectedSessionId, profileIdForSession(selectedSessionId));
       showArchivedSessions = true;
-      await refreshSessions();
+      if (previousSummary) {
+        applySessionSummaryUpdate({ ...previousSummary, archived: true, updatedAt: Date.now() });
+      }
+      await api.archiveSession(sessionId, profileIdForSession(sessionId));
       noticeText = m.session_archived_notice();
     } catch (error) {
+      showArchivedSessions = false;
+      if (previousSummary) {
+        applySessionSummaryUpdate(previousSummary);
+      }
       errorText = describeError(error);
     }
   }
@@ -10549,6 +10611,13 @@
     } catch (error) {
       errorText = describeError(error);
     }
+  }
+
+  async function deleteCurrentSession() {
+    if (!selectedSessionSummary) {
+      return;
+    }
+    await deleteSessionFromSidebar(selectedSessionSummary);
   }
 
   async function logoutWebUi() {
@@ -10876,11 +10945,14 @@
     // Refresh the active quota first. Otherwise the profile list can race the
     // same single-flight request and persist a temporary `refreshing` payload.
     await refreshQuota(true);
-    await Promise.all([refreshProfileAccounts(true), refreshResetTickets(true)]);
+    if (webRole === "owner") {
+      await Promise.all([refreshProfileAccounts(true), refreshResetTickets(true)]);
+    }
   }
 
   async function refreshProfileAccounts(force = false) {
-    if (readOnlyRole) {
+    if (webRole !== "owner") {
+      profileAccounts = [];
       return;
     }
     if (profileAccountsRefreshPromise) {
@@ -14426,6 +14498,31 @@
       placement: "above",
       preferredWidth: 304
     });
+    await updateComposerSettingsChildPopoverPosition();
+  }
+
+  async function updateComposerSettingsChildPopoverPosition() {
+    const triggerElement =
+      composerSettingsChildPopover === "model"
+        ? composerModelTriggerElement
+        : composerSettingsChildPopover === "reasoning"
+          ? composerReasoningTriggerElement
+          : composerSettingsChildPopover === "speed"
+            ? composerSpeedTriggerElement
+            : undefined;
+    if (!composerSettingsChildPopover || !triggerElement || !composerSettingsChildPopoverElement || typeof window === "undefined") {
+      composerSettingsChildPopoverStyle = "";
+      return;
+    }
+    await tick();
+    composerSettingsChildPopoverStyle = anchoredPopoverStyle(triggerElement, composerSettingsChildPopoverElement, {
+      align: "start",
+      maxWidth: 360,
+      minHeight: 96,
+      minWidth: 232,
+      placement: "right",
+      preferredWidth: 272
+    });
   }
 
   async function updateSessionTurnSearchPopoverPosition() {
@@ -14819,11 +14916,13 @@
 	      {activeSavedSessionFilterId}
       showArchived={showArchivedSessions}
       showCloseButton={isMobileLayout}
+      showSidebarToggle={!isMobileLayout}
       onArchivedChange={updateArchivedSessions}
       onCancelAccountLogin={(loginId) => {
         void cancelAccountLogin(loginId);
       }}
       onClose={closeMobileSidebar}
+      onToggleSidebar={toggleDesktopSidebar}
       onCreate={() => {
         void createSession();
       }}
@@ -14912,6 +15011,9 @@
       onToggleArchive={(session) => {
         void archiveSessionFromSidebar(session);
       }}
+      onDeleteSession={(session) => {
+        void deleteSessionFromSidebar(session);
+      }}
       onRequestMoveSessionProfile={openSessionProfileMoveDialog}
       onStartAccountLogin={(type) => {
         void startAccountLogin(type);
@@ -14943,7 +15045,6 @@
       bind:workspaceMenuOpen={workspaceMenuOpen}
       contextUsage={getContextUsageIndicator()}
       {isMobileLayout}
-      {sidebarCollapsed}
       {running}
       {selectedSessionId}
       {selectedSessionSummary}
@@ -14964,13 +15065,15 @@
       onOpenGitTab={openGitTab}
       onOpenMemoryTab={openMemoryTab}
       onOpenMobileSidebar={openMobileSidebar}
-      onToggleSidebar={toggleDesktopSidebar}
       onOpenSettingsTab={openSettingsTab}
       onOpenTasksTab={openTasksTab}
       onSaveTitle={() => void saveTitle()}
       onToggleArchive={() => {
         if (showArchivedSessions) void unarchiveCurrentSession();
         else void archiveCurrentSession();
+      }}
+      onDeleteSession={() => {
+        void deleteCurrentSession();
       }}
       onTogglePinned={() => {
         if (selectedSessionSummary) {
@@ -15965,6 +16068,7 @@
                             composerSettingsAnchor = "session";
                             composerSettingsTab = "session";
                             composerSettingsSessionView = "quick";
+                            composerSettingsChildPopover = null;
                             composerSettingsOpen = true;
                           }}
                           type="button"
@@ -16060,6 +16164,7 @@
                           composerSettingsAnchor = "session";
                           composerSettingsTab = "session";
                           composerSettingsSessionView = "quick";
+                          composerSettingsChildPopover = null;
                         }}
                         role="tab"
                         type="button"
@@ -16076,6 +16181,7 @@
                         onclick={() => {
                           composerSettingsAnchor = "session";
                           composerSettingsTab = "skills";
+                          composerSettingsChildPopover = null;
                         }}
                         role="tab"
                         type="button"
@@ -16092,6 +16198,7 @@
                         onclick={() => {
                           composerSettingsAnchor = "security";
                           composerSettingsTab = "security";
+                          composerSettingsChildPopover = null;
                         }}
                         role="tab"
                         type="button"
@@ -16103,23 +16210,23 @@
                       <div class="space-y-1" role="tabpanel">
                         {#if composerSettingsSessionView === "quick"}
                           <p class="px-2 pb-1 text-[11px] font-medium text-gray-500">{composerSettingsSummary.model} · {conversation.preferences.effort ?? "medium"}</p>
-                          <button class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-gray-50" disabled={readOnlyRole} onclick={() => (composerSettingsSessionView = "model")} type="button">
+                          <button bind:this={composerModelTriggerElement} class={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-gray-50 ${composerSettingsChildPopover === "model" ? "bg-gray-50" : ""}`} disabled={readOnlyRole} onclick={() => (composerSettingsChildPopover = composerSettingsChildPopover === "model" ? null : "model")} type="button">
                             <Cpu size={16} class="text-gray-400" />
                             <span class="min-w-0 flex-1"><span class="block text-sm font-semibold text-gray-800">{ui.model}</span><span class="block truncate text-[11px] text-gray-500">{composerSettingsSummary.model}</span></span>
                             <ChevronDown size={16} class="-rotate-90 text-gray-400" />
                           </button>
-                          <button class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-gray-50" disabled={readOnlyRole} onclick={() => (composerSettingsSessionView = "reasoning")} type="button">
+                          <button bind:this={composerReasoningTriggerElement} class={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-gray-50 ${composerSettingsChildPopover === "reasoning" ? "bg-gray-50" : ""}`} disabled={readOnlyRole} onclick={() => (composerSettingsChildPopover = composerSettingsChildPopover === "reasoning" ? null : "reasoning")} type="button">
                             <Brain size={16} class="text-gray-400" />
                             <span class="min-w-0 flex-1"><span class="block text-sm font-semibold text-gray-800">{m.reasoning()}</span><span class="block truncate text-[11px] text-gray-500">{conversation.preferences.effort ?? "medium"}</span></span>
                             <ChevronDown size={16} class="-rotate-90 text-gray-400" />
                           </button>
-                          <button class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-gray-50" disabled={readOnlyRole} onclick={() => (composerSettingsSessionView = "speed")} type="button">
+                          <button bind:this={composerSpeedTriggerElement} class={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-gray-50 ${composerSettingsChildPopover === "speed" ? "bg-gray-50" : ""}`} disabled={readOnlyRole} onclick={() => (composerSettingsChildPopover = composerSettingsChildPopover === "speed" ? null : "speed")} type="button">
                             <Zap size={16} class="text-gray-400" />
                             <span class="min-w-0 flex-1"><span class="block text-sm font-semibold text-gray-800">{ui.speed}</span><span class="block truncate text-[11px] text-gray-500">{getSpeedOptionLabel(conversation.preferences.speed ?? "auto")}</span></span>
                             <ChevronDown size={16} class="-rotate-90 text-gray-400" />
                           </button>
                           <div class="my-1 border-t border-gray-100"></div>
-                          <button class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-gray-600 transition-colors hover:bg-gray-50" onclick={() => (composerSettingsSessionView = "advanced")} type="button">
+                          <button class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-gray-600 transition-colors hover:bg-gray-50" onclick={() => { composerSettingsChildPopover = null; composerSettingsSessionView = "advanced"; }} type="button">
                             <Settings size={16} class="text-gray-400" />
                             <span class="min-w-0 flex-1"><span class="block text-sm font-semibold text-gray-800">More settings</span><span class="block text-[11px] text-gray-500">Context, plan, language and send key</span></span>
                             <ChevronDown size={16} class="-rotate-90 text-gray-400" />
@@ -16509,6 +16616,32 @@
                       </div>
                     {/if}
                   </div>
+                  {#if composerSettingsTab === "session" && composerSettingsChildPopover}
+                    <div
+                      bind:this={composerSettingsChildPopoverElement}
+                      use:portal
+                      class="floating-popover composer-popover max-h-[min(30rem,calc(100vh-1rem))] w-[17rem] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain rounded-xl border p-2.5 sm:rounded-2xl sm:p-3"
+                      style={composerSettingsChildPopoverStyle || "opacity:0;pointer-events:none;"}
+                    >
+                      {#if composerSettingsChildPopover === "model"}
+                        <p class="mb-1 px-2 text-xs font-bold text-gray-800">{ui.model}</p>
+                        <button class={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-gray-50 ${!conversation.preferences.model ? "bg-gray-50 font-semibold" : ""}`} disabled={readOnlyRole} onclick={() => { setPreference("model", null); composerSettingsChildPopover = null; }} type="button"><span>{ui.autoDefault}</span>{#if !conversation.preferences.model}<CheckCircle2 size={16} class="text-amber-600" />{/if}</button>
+                        {#each config?.models ?? [] as model (model.id)}
+                          <button class={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-gray-50 ${conversation.preferences.model === model.id ? "bg-gray-50 font-semibold" : ""}`} disabled={readOnlyRole} onclick={() => { setPreference("model", model.id); composerSettingsChildPopover = null; }} type="button"><span class="truncate">{model.displayName}</span>{#if conversation.preferences.model === model.id}<CheckCircle2 size={16} class="shrink-0 text-amber-600" />{/if}</button>
+                        {/each}
+                      {:else if composerSettingsChildPopover === "reasoning"}
+                        <p class="mb-1 px-2 text-xs font-bold text-gray-800">{m.reasoning()}</p>
+                        {#each reasoningOptions as option (option)}
+                          <button class={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm capitalize transition-colors hover:bg-gray-50 ${(conversation.preferences.effort ?? reasoningOptions[0]) === option ? "bg-gray-50 font-semibold" : ""}`} disabled={readOnlyRole} onclick={() => { setPreference("effort", option as SessionPreferences["effort"]); composerSettingsChildPopover = null; }} type="button"><span>{option}</span>{#if (conversation.preferences.effort ?? reasoningOptions[0]) === option}<CheckCircle2 size={16} class="text-amber-600" />{/if}</button>
+                        {/each}
+                      {:else if composerSettingsChildPopover === "speed"}
+                        <p class="mb-1 px-2 text-xs font-bold text-gray-800">{ui.speed}</p>
+                        {#each speedOptions as option (option)}
+                          <button class={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-gray-50 ${(conversation.preferences.speed ?? "auto") === option ? "bg-gray-50 font-semibold" : ""}`} disabled={readOnlyRole} onclick={() => { setSpeedPreference(option); composerSettingsChildPopover = null; }} type="button"><span>{getSpeedOptionLabel(option)}</span>{#if (conversation.preferences.speed ?? "auto") === option}<CheckCircle2 size={16} class="text-amber-600" />{/if}</button>
+                        {/each}
+                      {/if}
+                    </div>
+                  {/if}
                 {/if}
               </div>
             </div>

@@ -19,6 +19,8 @@ services:
       CODEX_WEBUI_DATA_DIR: /data
       CODEX_WEBUI_ALLOWED_ROOTS: /workspace
       CODEX_WEBUI_BASE_PATH: ""
+      # The owner-only in-app update action keeps CODEX_VERSION in this mounted file in sync.
+      CODEX_WEBUI_COMPOSE_ENV_FILE: /run/codex-webui/compose.env
 
       # Public deployment security. Keep the normal and owner passwords different.
       CODEX_WEBUI_PASSWORD_HASH: ${CODEX_WEBUI_PASSWORD_HASH:-}
@@ -46,6 +48,7 @@ services:
       CODEX_WEBUI_ENABLE_SYSTEM_SHUTDOWN: "false"
       CODEX_WEBUI_FORCE_YOLO: "false"
     volumes:
+      - ./.env:/run/codex-webui/compose.env
       - /mnt/data/comic/codex:/home/node/.codex
       - /mnt/data/comic/webui:/data
       - /mnt/data/comic/workspace:/workspace

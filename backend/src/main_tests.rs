@@ -86,6 +86,7 @@ fn test_state(project_root: PathBuf, allowed_roots: Vec<PathBuf>, codex_home: Pa
             public_host: "127.0.0.1".to_string(),
             public_port: 4173,
             codex_bin: "codex".to_string(),
+            compose_env_file: None,
             max_upload_bytes: 20 * 1024 * 1024,
             max_attachment_storage_bytes: 2 * 1024 * 1024 * 1024,
             git_discovery_depth: 1,

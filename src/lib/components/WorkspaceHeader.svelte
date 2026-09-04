@@ -10,8 +10,6 @@
     Menu,
     MessageSquare,
     Monitor,
-    PanelLeftClose,
-    PanelLeftOpen,
     Pencil,
     Pin,
     Plus,
@@ -19,6 +17,7 @@
     Search,
     Settings,
     Terminal,
+    Trash2,
     User,
     UserCog
   } from "lucide-svelte";
@@ -66,8 +65,6 @@
     ui,
     searchOpenLabel,
     onOpenMobileSidebar,
-    sidebarCollapsed = false,
-    onToggleSidebar,
     onSaveTitle,
     onEditTags,
     onToggleSearch,
@@ -75,6 +72,7 @@
     onForkHandoff,
     onTogglePinned,
     onToggleArchive,
+    onDeleteSession,
     onCreateSession,
     onOpenTasksTab,
     onOpenGitTab,
@@ -111,8 +109,6 @@
     ui: UiCopy;
     searchOpenLabel: string;
     onOpenMobileSidebar: () => void;
-    sidebarCollapsed?: boolean;
-    onToggleSidebar: () => void;
     onSaveTitle: () => void | Promise<void>;
     onEditTags: () => void | Promise<void>;
     onToggleSearch: () => void;
@@ -120,6 +116,7 @@
     onForkHandoff: () => void | Promise<void>;
     onTogglePinned: () => void | Promise<void>;
     onToggleArchive: () => void | Promise<void>;
+    onDeleteSession: () => void | Promise<void>;
     onCreateSession: () => void | Promise<void>;
     onOpenTasksTab: () => void;
     onOpenGitTab: () => void;
@@ -208,20 +205,6 @@
     {#if isMobileLayout}
       <button class="-ml-2 rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900" onclick={onOpenMobileSidebar} type="button">
         <Menu size={20} />
-      </button>
-    {:else}
-      <button
-        aria-label={sidebarCollapsed ? "Open sidebar" : "Close sidebar"}
-        class="-ml-2 rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900"
-        onclick={onToggleSidebar}
-        title={sidebarCollapsed ? "Open sidebar" : "Close sidebar"}
-        type="button"
-      >
-        {#if sidebarCollapsed}
-          <PanelLeftOpen size={20} />
-        {:else}
-          <PanelLeftClose size={20} />
-        {/if}
       </button>
     {/if}
 
@@ -381,6 +364,15 @@
         {:else}
           <Archive size={18} />
         {/if}
+      </button>
+      <button
+        class="ui-animated-button ui-animated-button--icon inline-flex h-8 w-8 items-center justify-center rounded-lg p-0 text-gray-400 transition-all hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 sm:h-9 sm:w-9"
+        disabled={readOnly}
+        onclick={() => void onDeleteSession()}
+        title="Delete thread"
+        type="button"
+      >
+        <Trash2 size={18} />
       </button>
     {/if}
 

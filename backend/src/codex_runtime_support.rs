@@ -6,6 +6,7 @@ const ACCOUNT_LOGIN_FLOW_TTL: Duration = Duration::from_secs(15 * 60);
 const ACCOUNT_APP_SERVER_REQUEST_TIMEOUT: Duration = Duration::from_millis(1_500);
 const ACCOUNT_APP_SERVER_RECOVERY_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_AUTH_JSON_IMPORT_BYTES: u64 = 512 * 1024;
+const MAX_COMPOSE_ENV_FILE_BYTES: u64 = 1024 * 1024;
 
 pub(crate) async fn codex_runtime_status(state: &AppState, check_latest: bool) -> Result<Value> {
     let configured_bin = state.config.codex_bin.clone();
@@ -425,15 +426,78 @@ pub(crate) async fn install_or_update_codex(
     }
 
     let runtime = codex_runtime_status(state, true).await?;
+    let installed_version = runtime
+        .get("version")
+        .and_then(Value::as_str)
+        .and_then(codex_version_pin);
+    let env_sync = match installed_version.as_deref() {
+        Some(version) => sync_codex_version_to_compose_env(state, version).await,
+        None => Ok(None),
+    };
+    let (env_version_synced, env_sync_warning) = match env_sync {
+        Ok(Some(version)) => (Some(version), None),
+        Ok(None) => (None, None),
+        Err(error) => (None, Some(error.to_string())),
+    };
+    let action = if install_if_missing && !installed {
+        "installed"
+    } else {
+        "updated"
+    };
+    let message = match (&env_version_synced, &env_sync_warning) {
+        (Some(version), _) => format!("Codex {action} successfully. CODEX_VERSION was synced to {version}."),
+        (_, Some(warning)) => format!("Codex {action} successfully, but CODEX_VERSION was not synced: {warning}"),
+        _ => format!("Codex {action} successfully."),
+    };
     Ok(json!({
         "ok": true,
-        "message": if install_if_missing && !installed {
-            "Codex installed successfully."
-        } else {
-            "Codex updated successfully."
-        },
+        "message": message,
         "runtime": runtime,
+        "envVersionSynced": env_version_synced,
+        "envSyncWarning": env_sync_warning,
     }))
+}
+
+fn codex_version_pin(version_output: &str) -> Option<String> {
+    let (major, minor, patch) = extract_semver(version_output)?;
+    Some(format!("{major}.{minor}.{patch}"))
+}
+
+async fn sync_codex_version_to_compose_env(state: &AppState, version: &str) -> Result<Option<String>> {
+    let Some(path) = state.config.compose_env_file.as_ref() else {
+        return Ok(None);
+    };
+    let metadata = tokio_fs::metadata(path)
+        .await
+        .with_context(|| format!("failed to read compose env file {}", path.display()))?;
+    if !metadata.is_file() || metadata.len() > MAX_COMPOSE_ENV_FILE_BYTES {
+        anyhow::bail!("compose env file must be a regular file smaller than 1MB");
+    }
+    let source = tokio_fs::read_to_string(path)
+        .await
+        .with_context(|| format!("failed to read compose env file {}", path.display()))?;
+    let mut replaced = false;
+    let mut lines = source
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("CODEX_VERSION=") {
+                replaced = true;
+                format!("CODEX_VERSION={version}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+    if !replaced {
+        lines.push(format!("CODEX_VERSION={version}"));
+    }
+    let mut next = lines.join("\n");
+    next.push('\n');
+    tokio_fs::write(path, next)
+        .await
+        .with_context(|| format!("failed to write compose env file {}", path.display()))?;
+    Ok(Some(version.to_string()))
 }
 
 pub(crate) async fn codex_quota_status(

@@ -32,7 +32,8 @@
     Copy,
     UserCog,
     Pencil,
-    Trash2
+    Trash2,
+    PanelLeftClose
   } from "lucide-svelte";
 
   import { describeUiError } from "$lib/ui-errors";
@@ -98,6 +99,7 @@
     onArchivedChange,
     onTogglePin,
     onToggleArchive,
+    onDeleteSession,
     onRequestMoveSessionProfile,
     profiles = [],
     profileAccounts = [],
@@ -148,6 +150,8 @@
     onCancelAccountLogin,
     onLogoutAccount,
     onLogoutWeb,
+    showSidebarToggle = false,
+    onToggleSidebar = () => {},
     showCloseButton = false,
     onClose = () => {}
   }: {
@@ -188,6 +192,7 @@
     onArchivedChange: (nextValue: boolean) => void;
     onTogglePin: (session: SessionSummary) => void;
     onToggleArchive: (session: SessionSummary) => void;
+    onDeleteSession: (session: SessionSummary) => void;
     onRequestMoveSessionProfile: (session: SessionSummary) => void;
     profiles?: Array<{
       id: string;
@@ -253,6 +258,8 @@
     onCancelAccountLogin: (loginId: string) => void;
     onLogoutAccount: () => void;
     onLogoutWeb: () => void;
+    showSidebarToggle?: boolean;
+    onToggleSidebar?: () => void;
     showCloseButton?: boolean;
     onClose?: () => void;
   } = $props();
@@ -1087,6 +1094,17 @@
         <h1 class="text-lg font-semibold tracking-tight text-gray-900">{ui.appShortName}</h1>
       </div>
       <div class="flex items-center gap-1.5">
+        {#if showSidebarToggle}
+          <button
+            aria-label="Close sidebar"
+            class="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+            onclick={onToggleSidebar}
+            title="Close sidebar"
+            type="button"
+          >
+            <PanelLeftClose size={18} />
+          </button>
+        {/if}
         <button
           bind:this={notificationButtonElement}
           aria-expanded={notificationsOpen}
@@ -1807,6 +1825,23 @@
             {:else}
               <Archive size={14} />
             {/if}
+          </button>
+          <button
+            aria-label="Delete thread"
+            class={`absolute right-[5.75rem] top-2 z-10 rounded-lg border border-gray-200 bg-white/95 p-1.5 text-gray-400 shadow-sm transition-all ${
+              readOnly
+                ? "cursor-not-allowed opacity-45"
+                : "opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+            }`}
+            disabled={readOnly}
+            onclick={(event) => {
+              event.stopPropagation();
+              onDeleteSession(session);
+            }}
+            title="Delete thread"
+            type="button"
+          >
+            <Trash2 size={14} />
           </button>
         </div>
       {/each}
