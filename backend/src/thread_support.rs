@@ -1079,9 +1079,9 @@ pub(crate) async fn delete_session_payload(
     session_id: &str,
 ) -> ApiResult<Value> {
     let (resolved_profile_id, profile) = resolve_runtime_profile_entry(&state.config, profile_id);
-    let session_lock = session_operation_lock(state, resolved_profile_id, session_id).await;
+    let session_lock = session_operation_lock(state, &resolved_profile_id, session_id).await;
     let _session_guard = session_lock.lock().await;
-    let runtime_key = runtime_session_key(resolved_profile_id, session_id);
+    let runtime_key = runtime_session_key(&resolved_profile_id, session_id);
     if state.active_turns.lock().await.contains_key(&runtime_key)
         || state.pending_turn_starts.lock().await.contains(&runtime_key)
         || state.queue_dispatching.lock().await.contains(&runtime_key)
@@ -1098,7 +1098,7 @@ pub(crate) async fn delete_session_payload(
     let mut archived = false;
     let mut candidate = None;
     for is_archived in [false, true] {
-        if let Some(entry) = list_rollout_candidates_payload(state, resolved_profile_id, is_archived)
+        if let Some(entry) = list_rollout_candidates_payload(state, &resolved_profile_id, is_archived)
             .await?
             .into_iter()
             .find(|entry| entry.get("id").and_then(Value::as_str) == Some(session_id))
@@ -1113,14 +1113,14 @@ pub(crate) async fn delete_session_payload(
     }
 
     if !archived {
-        app_server_client_for_session(state, resolved_profile_id, session_id)
+        app_server_client_for_session(state, &resolved_profile_id, session_id)
             .await
             .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("Failed to connect to codex app-server: {error}")))?
             .request("thread/archive", json!({ "threadId": session_id }))
             .await
             .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("Failed to prepare the session for deletion: {error}")))?;
-        invalidate_session_listing_cache(state, resolved_profile_id, None).await;
-        candidate = list_rollout_candidates_payload(state, resolved_profile_id, true)
+        invalidate_session_lists(state, &resolved_profile_id).await;
+        candidate = list_rollout_candidates_payload(state, &resolved_profile_id, true)
             .await?
             .into_iter()
             .find(|entry| entry.get("id").and_then(Value::as_str) == Some(session_id));
@@ -1159,7 +1159,7 @@ pub(crate) async fn delete_session_payload(
             .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to update session index: {error}")))?;
     }
 
-    let uploads_dir = session_uploads_dir(state, resolved_profile_id, session_id);
+    let uploads_dir = session_uploads_dir(state, &resolved_profile_id, session_id);
     if tokio_fs::metadata(&uploads_dir).await.is_ok() {
         tokio_fs::remove_dir_all(&uploads_dir)
             .await
@@ -1176,7 +1176,7 @@ pub(crate) async fn delete_session_payload(
         "highlightsByThreadId",
         "languageBridgeByThreadId",
     ];
-    with_ui_state_write(state, resolved_profile_id, |ui_state| {
+    with_ui_state_write(state, &resolved_profile_id, |ui_state| {
         for section in ui_state_sections {
             if let Some(entries) = ui_state.get_mut(section).and_then(Value::as_object_mut) {
                 entries.remove(session_id);
@@ -1189,7 +1189,7 @@ pub(crate) async fn delete_session_payload(
     })
     .await?;
 
-    clear_app_server_assignments_for_sessions(state, resolved_profile_id, &[session_id.to_string()]).await;
-    invalidate_session_lists(state, resolved_profile_id).await;
+    clear_app_server_assignments_for_sessions(state, &resolved_profile_id, &[session_id.to_string()]).await;
+    invalidate_session_lists(state, &resolved_profile_id).await;
     Ok(json!({ "ok": true }))
 }
