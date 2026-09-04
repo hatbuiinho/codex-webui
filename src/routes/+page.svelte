@@ -334,6 +334,7 @@
   let startingMessage = $state(false);
   let submitComposerBusy = $state(false);
   let uploading = $state(false);
+  let composerDragActive = $state(false);
   let errorText = $state("");
   let noticeText = $state("");
   let loginPassword = $state("");
@@ -3122,6 +3123,10 @@
       }
     };
     const handleGlobalKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && composerSettingsOpen) {
+        composerSettingsOpen = false;
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && selectedSessionId && activeWorkspaceTabId === "chat") {
         event.preventDefault();
         sessionTurnSearchOpen = true;
@@ -3130,6 +3135,21 @@
           sessionTurnSearchInputElement?.select();
         });
       }
+    };
+    const closeComposerSettingsOnOutsidePointer = (event: PointerEvent) => {
+      if (!composerSettingsOpen) {
+        return;
+      }
+      const target = event.target as Node | null;
+      if (
+        target &&
+        (composerSettingsPopoverElement?.contains(target) ||
+          composerSettingsTriggerElement?.contains(target) ||
+          composerSecurityTriggerElement?.contains(target))
+      ) {
+        return;
+      }
+      composerSettingsOpen = false;
     };
     const syncPwaInstallState = () => {
       const installed =
@@ -3245,6 +3265,7 @@
     window.visualViewport?.addEventListener("resize", handleViewportChange);
     window.visualViewport?.addEventListener("scroll", handleViewportChange);
     window.addEventListener("keydown", handleGlobalKeydown, true);
+    window.addEventListener("pointerdown", closeComposerSettingsOnOutsidePointer, true);
     window.addEventListener("pointerdown", requestNotificationPermissionFromGesture, true);
     window.addEventListener("keydown", requestNotificationPermissionFromGesture, true);
     window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
@@ -3327,6 +3348,7 @@
       window.visualViewport?.removeEventListener("resize", handleViewportChange);
       window.visualViewport?.removeEventListener("scroll", handleViewportChange);
       window.removeEventListener("keydown", handleGlobalKeydown, true);
+      window.removeEventListener("pointerdown", closeComposerSettingsOnOutsidePointer, true);
       window.removeEventListener("pointerdown", requestNotificationPermissionFromGesture, true);
       window.removeEventListener("keydown", requestNotificationPermissionFromGesture, true);
       window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
@@ -6111,7 +6133,9 @@
       webRole = authSession.role ?? "admin";
       loginMessage = "";
       ensureGlobalStreamSubscription();
-      void refreshRuntimeStatus(false, { silent: true });
+      if (webRole === "owner") {
+        void refreshRuntimeStatus(false, { silent: true });
+      }
 
       readSessionListStateFromUrl();
       const requestedSessionId = getRequestedSessionIdFromUrl();
@@ -6121,7 +6145,9 @@
       syncConfiguredTheme(config);
       syncStartupAlertModal(config);
       void refreshQuota(false);
-      void refreshResetTickets(false);
+      if (webRole === "owner") {
+        void refreshResetTickets(false);
+      }
       void refreshAccountState(false);
       void refreshNotifications();
       void refreshTerminals();
@@ -10092,7 +10118,90 @@
     filePickerElement?.click();
   }
 
-  async function uploadFiles(files: FileList | null) {
+  function normalizedImageAttachment(file: File, index: number) {
+    if (file.name.trim()) {
+      return file;
+    }
+    const subtype = file.type.split("/")[1]?.replace(/[^a-z0-9]/giu, "") || "png";
+    return new File([file], `pasted-image-${Date.now()}-${index + 1}.${subtype}`, {
+      lastModified: Date.now(),
+      type: file.type || "image/png"
+    });
+  }
+
+  function imageFilesFromDataTransfer(dataTransfer: DataTransfer | null) {
+    if (!dataTransfer) {
+      return [] as File[];
+    }
+    const files = Array.from(dataTransfer.files).filter((file) => file.type.startsWith("image/"));
+    if (files.length > 0) {
+      return files.map(normalizedImageAttachment);
+    }
+    return Array.from(dataTransfer.items)
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null)
+      .map(normalizedImageAttachment);
+  }
+
+  function mayContainImageFile(dataTransfer: DataTransfer | null) {
+    if (!dataTransfer) {
+      return false;
+    }
+    return (
+      Array.from(dataTransfer.files).some((file) => file.type.startsWith("image/")) ||
+      Array.from(dataTransfer.items).some((item) => item.kind === "file" && item.type.startsWith("image/")) ||
+      Array.from(dataTransfer.types).includes("Files")
+    );
+  }
+
+  function handleComposerPaste(event: ClipboardEvent) {
+    const files = imageFilesFromDataTransfer(event.clipboardData);
+    if (files.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    if (!readOnlyRole) {
+      void uploadFiles(files);
+    }
+  }
+
+  function handleComposerDragEnter(event: DragEvent) {
+    if (!mayContainImageFile(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    composerDragActive = true;
+  }
+
+  function handleComposerDragOver(event: DragEvent) {
+    if (!mayContainImageFile(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = readOnlyRole ? "none" : "copy";
+    }
+  }
+
+  function handleComposerDragLeave(event: DragEvent) {
+    const nextTarget = event.relatedTarget as Node | null;
+    const currentTarget = event.currentTarget as HTMLElement | null;
+    if (!nextTarget || !currentTarget?.contains(nextTarget)) {
+      composerDragActive = false;
+    }
+  }
+
+  function handleComposerDrop(event: DragEvent) {
+    event.preventDefault();
+    composerDragActive = false;
+    const files = imageFilesFromDataTransfer(event.dataTransfer);
+    if (!readOnlyRole && files.length > 0) {
+      void uploadFiles(files);
+    }
+  }
+
+  async function uploadFiles(files: FileList | readonly File[] | null) {
     if (readOnlyRole) {
       errorText = m.error_forbidden_role();
       return;
@@ -10449,8 +10558,8 @@
   }
 
   async function startAccountLogin(type: "chatgpt" | "chatgptDeviceCode") {
-    if (readOnlyRole) {
-      errorText = m.error_forbidden_role();
+    if (webRole !== "owner") {
+      errorText = "This action requires the owner role.";
       return;
     }
     try {
@@ -10495,8 +10604,8 @@
     path: string,
     options: { createProfile?: boolean; profileLabel?: string | null; profileId?: string | null } = {}
   ) {
-    if (readOnlyRole) {
-      errorText = m.error_forbidden_role();
+    if (webRole !== "owner") {
+      errorText = "This action requires the owner role.";
       return;
     }
     const trimmedPath = path.trim();
@@ -10522,8 +10631,8 @@
   }
 
   async function cancelAccountLogin(loginId: string) {
-    if (readOnlyRole) {
-      errorText = m.error_forbidden_role();
+    if (webRole !== "owner") {
+      errorText = "This action requires the owner role.";
       return;
     }
     try {
@@ -10535,8 +10644,8 @@
   }
 
   async function logoutAccount() {
-    if (readOnlyRole) {
-      errorText = m.error_forbidden_role();
+    if (webRole !== "owner") {
+      errorText = "This action requires the owner role.";
       return;
     }
     try {
@@ -10551,6 +10660,10 @@
   }
 
   async function selectAccountProfile(profileId: string) {
+    if (webRole !== "owner") {
+      errorText = "This action requires the owner role.";
+      return;
+    }
     if (!profileId.trim()) {
       return;
     }
@@ -10764,6 +10877,10 @@
   }
 
   async function refreshResetTickets(force = false) {
+    if (webRole !== "owner") {
+      resetTickets = null;
+      return;
+    }
     if (resetTicketsRefreshPromise) {
       resetTicketsForceRefreshQueued = resetTicketsForceRefreshQueued || force;
       return resetTicketsRefreshPromise;
@@ -10798,8 +10915,8 @@
   }
 
   async function useResetTicket(ticket: CodexResetTicket) {
-    if (readOnlyRole) {
-      errorText = m.error_forbidden_role();
+    if (webRole !== "owner") {
+      errorText = "This action requires the owner role.";
       return;
     }
     if (!ticket.available || resetTicketUseBusyId) {
@@ -15717,8 +15834,21 @@
                     {/if}
                   </div>
                 {/if}
-                <form bind:this={composerPanelElement} class="composer-panel bg-white/95 border-2 border-gray-200 rounded-2xl shadow-2xl overflow-hidden transition-all duration-200 focus-within:-translate-y-0.5 focus-within:border-amber-400/70 focus-within:bg-white focus-within:shadow-[0_24px_60px_-34px_rgba(245,158,11,0.65)]" onsubmit={(event) => { event.preventDefault(); void submitComposer(); }}>
-                  <textarea bind:this={composerTextareaElement} bind:value={draft} class="composer-textarea w-full min-h-[3rem] overflow-y-hidden border-none bg-transparent px-4 py-3 pr-12 text-sm leading-6 text-gray-800 placeholder-gray-400 outline-none transition-colors duration-150 focus:outline-none focus:ring-0 focus:placeholder:text-amber-500/70 resize-none sm:min-h-[3.25rem]" oninput={handleComposerInput} onkeydown={handleComposerKeydown} placeholder={composerQueueModeActive ? ui.queueFollowUpPlaceholder : ui.askCodex} readonly={readOnlyRole} rows="1"></textarea>
+                <form
+                  bind:this={composerPanelElement}
+                  class="composer-panel relative bg-white/95 border-2 border-gray-200 rounded-2xl shadow-2xl overflow-hidden transition-all duration-200 focus-within:-translate-y-0.5 focus-within:border-amber-400/70 focus-within:bg-white focus-within:shadow-[0_24px_60px_-34px_rgba(245,158,11,0.65)]"
+                  ondragenter={handleComposerDragEnter}
+                  ondragleave={handleComposerDragLeave}
+                  ondragover={handleComposerDragOver}
+                  ondrop={handleComposerDrop}
+                  onsubmit={(event) => { event.preventDefault(); void submitComposer(); }}
+                >
+                  <textarea bind:this={composerTextareaElement} bind:value={draft} class="composer-textarea w-full min-h-[3rem] overflow-y-hidden border-none bg-transparent px-4 py-3 pr-12 text-sm leading-6 text-gray-800 placeholder-gray-400 outline-none transition-colors duration-150 focus:outline-none focus:ring-0 focus:placeholder:text-amber-500/70 resize-none sm:min-h-[3.25rem]" oninput={handleComposerInput} onkeydown={handleComposerKeydown} onpaste={handleComposerPaste} placeholder={composerQueueModeActive ? ui.queueFollowUpPlaceholder : ui.askCodex} readonly={readOnlyRole} rows="1"></textarea>
+                  {#if composerDragActive && !readOnlyRole}
+                    <div class="pointer-events-none absolute inset-1 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-amber-400 bg-amber-50/95 text-sm font-bold text-amber-700 backdrop-blur-sm">
+                      Drop images to attach
+                    </div>
+                  {/if}
                   
                   {#if draftAttachments.length > 0}
                     <div class="flex flex-wrap gap-1.5 px-3.5 pb-1.5">

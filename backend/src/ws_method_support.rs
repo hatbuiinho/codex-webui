@@ -57,16 +57,15 @@ pub(crate) fn ws_method_requires_owner(method: &str, params: &Value) -> bool {
         "session/create" | "session/savePreferences" | "turn/send" | "arena/start"
     ) && preferences_payload_requires_owner(
         params.get("preferences").unwrap_or(&Value::Null),
-    )) || (method == "account/login/start"
-        && (params
-            .get("authJsonFile")
-            .and_then(Value::as_str)
-            .is_some_and(|path| !path.trim().is_empty())
-            || params
-                .get("createProfile")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)))
-        || matches!(method, "account/profile/update" | "account/profile/delete")
+    )) || matches!(
+        method,
+        "account/login/start"
+            | "account/login/cancel"
+            | "account/logout"
+            | "account/profile/select"
+            | "account/profile/update"
+            | "account/profile/delete"
+    )
         || (method == "git/worktrees/remove"
             && params
                 .get("force")

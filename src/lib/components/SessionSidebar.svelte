@@ -273,6 +273,7 @@
   let sessionFoldersCollapsed = $state(true);
   let boundedAutoloadPasses = $state(0);
   let loadMoreOrigin = $state<"manual" | "auto" | null>(null);
+  const ownerControlsVisible = $derived(webRole === "owner");
   let lastSessionListSignature = "";
   let pendingSessionListScrollAnchor: { sessionId: string; offset: number } | null = null;
   let serverAuthJsonPath = $state("");
@@ -1854,7 +1855,7 @@
       onclick={() => {
         const opening = !accountMenuOpen;
         accountMenuOpen = opening;
-        if (opening && !readOnly) {
+        if (opening && ownerControlsVisible) {
           onRefreshProfileAccounts(false);
         }
       }}
@@ -1895,7 +1896,7 @@
             <p class="text-sm font-semibold text-gray-900">{accountLabel()}</p>
             <div class="mt-2 flex flex-wrap items-center gap-1.5">
               <span class="sidebar-flyout-badge rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500">
-                {webRole === "viewer" ? ui.roleViewer : ui.roleAdmin}
+                {webRole === "owner" ? "Owner" : webRole === "viewer" ? ui.roleViewer : ui.roleAdmin}
               </span>
               {#if readOnly}
                 <span class="sidebar-flyout-badge sidebar-flyout-badge--warning rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-amber-700">
@@ -1910,7 +1911,7 @@
         </div>
 
         <div class="min-h-0 overflow-y-auto px-4 py-4 space-y-6 pr-3 scrollbar-thin">
-          {#if profiles.length > 0}
+          {#if ownerControlsVisible && profiles.length > 0}
             <div class="space-y-3">
               <div class="flex items-center justify-between gap-2">
                 <h4 class="text-[10px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
@@ -1991,7 +1992,8 @@
             </div>
           {/if}
 
-          <div class="space-y-3">
+          {#if ownerControlsVisible}
+            <div class="space-y-3">
             <h4 class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-400">
               <Download size={10} /> {ui.serverCredentialsJson}
             </h4>
@@ -2054,7 +2056,8 @@
                 </button>
               </div>
             </div>
-          </div>
+            </div>
+          {/if}
 
           <div class="space-y-4">
             <h4 class="text-[10px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
@@ -2104,31 +2107,33 @@
             </div>
           </div>
 
-          <div class="space-y-4">
-            <h4 class="text-[10px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
-              <Settings size={10} /> {ui.sessionDefaults}
-            </h4>
+          {#if ownerControlsVisible}
+            <div class="space-y-4">
+              <h4 class="text-[10px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
+                <Settings size={10} /> {ui.sessionDefaults}
+              </h4>
 
-            <label
-              class:checkbox-card--disabled={readOnly || defaultLanguageBridgeBusy}
-              class="checkbox-card checkbox-card--compact w-full max-w-full"
-              for="default-language-bridge"
-            >
-              <input
-                checked={defaultLanguageBridgeEnabled}
-                class="checkbox-input"
-                disabled={readOnly || defaultLanguageBridgeBusy}
-                id="default-language-bridge"
-                onchange={(event) => onDefaultLanguageBridgeChange((event.currentTarget as HTMLInputElement).checked)}
-                type="checkbox"
-              />
-              <span aria-hidden="true" class="checkbox-control"></span>
-              <span class="checkbox-copy min-w-0">
-                <span class="checkbox-title">{ui.defaultLanguageBridge}</span>
-                <span class="checkbox-description">{ui.defaultLanguageBridgeDescription}</span>
-              </span>
-            </label>
-          </div>
+              <label
+                class:checkbox-card--disabled={readOnly || defaultLanguageBridgeBusy}
+                class="checkbox-card checkbox-card--compact w-full max-w-full"
+                for="default-language-bridge"
+              >
+                <input
+                  checked={defaultLanguageBridgeEnabled}
+                  class="checkbox-input"
+                  disabled={readOnly || defaultLanguageBridgeBusy}
+                  id="default-language-bridge"
+                  onchange={(event) => onDefaultLanguageBridgeChange((event.currentTarget as HTMLInputElement).checked)}
+                  type="checkbox"
+                />
+                <span aria-hidden="true" class="checkbox-control"></span>
+                <span class="checkbox-copy min-w-0">
+                  <span class="checkbox-title">{ui.defaultLanguageBridge}</span>
+                  <span class="checkbox-description">{ui.defaultLanguageBridgeDescription}</span>
+                </span>
+              </label>
+            </div>
+          {/if}
 
           <div class="space-y-4">
             <h4 class="text-[10px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
@@ -2167,7 +2172,7 @@
             {/if}
           </div>
 
-          {#if shouldShowResetTickets()}
+          {#if ownerControlsVisible && shouldShowResetTickets()}
             <div class="space-y-3">
               <div class="flex items-center justify-between gap-2">
                 <div class="flex min-w-0 items-center gap-2">
@@ -2243,7 +2248,8 @@
             </div>
           {/if}
 
-          <div class="space-y-4">
+          {#if ownerControlsVisible}
+            <div class="space-y-4">
             <h4 class="text-[10px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
               <Cpu size={10} /> {ui.runtime}
             </h4>
@@ -2325,9 +2331,10 @@
                 </button>
               </div>
             </div>
-          </div>
+            </div>
+          {/if}
 
-          {#if systemShutdownAvailable}
+          {#if ownerControlsVisible && systemShutdownAvailable}
             <div class="space-y-4">
               <div class="sidebar-flyout-surface rounded-2xl border border-gray-200 bg-gray-50/80 p-3 shadow-sm">
                 <div class="flex items-start gap-2 sm:gap-3">
@@ -2358,7 +2365,7 @@
         </div>
 
         <div class="sidebar-flyout-footer p-2 border-t border-gray-100 bg-gray-50/50 space-y-1">
-          {#if accountLoginFlow?.type === "chatgptDeviceCode"}
+          {#if ownerControlsVisible && accountLoginFlow?.type === "chatgptDeviceCode"}
             <div class="mb-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-left shadow-sm">
               <p class="text-xs font-bold text-amber-900">{ui.signInWithDeviceCode}</p>
               <p class="mt-1 text-[11px] leading-snug text-amber-800">{ui.deviceCodeSignInDescription}</p>
@@ -2423,14 +2430,16 @@
               {/if}
             </button>
           {/if}
-          <button 
-            class="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-white hover:text-amber-600 rounded-lg transition-all disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={readOnly || accountLoginFlow?.busy}
-            onclick={() => onStartAccountLogin("chatgptDeviceCode")}
-          >
-            <ExternalLink size={14} />
-            {account?.email || account?.type ? ui.switchAccount : ui.signInWithDeviceCode}
-          </button>
+          {#if ownerControlsVisible}
+            <button
+              class="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-white hover:text-amber-600 rounded-lg transition-all disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={readOnly || accountLoginFlow?.busy}
+              onclick={() => onStartAccountLogin("chatgptDeviceCode")}
+            >
+              <ExternalLink size={14} />
+              {account?.email || account?.type ? ui.switchAccount : ui.signInWithDeviceCode}
+            </button>
+          {/if}
           <div class="h-px bg-gray-200/50 my-1 mx-2"></div>
           <button 
             class="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 rounded-lg transition-all"
