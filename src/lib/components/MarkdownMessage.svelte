@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
+  import { apiPath } from "$lib/api";
   import { renderMarkdown } from "$lib/markdown-renderer";
   import { m } from "$lib/paraglide/messages.js";
 
@@ -40,16 +41,76 @@
   });
 
   $effect(() => {
+    // Track rendered Markdown so streamed assistant messages receive previews as new links arrive.
+    void html;
     if (!rootElement) {
       return;
     }
 
     const element = rootElement;
+    renderLocalImagePreviews(element);
     element.addEventListener("click", handleClick);
     return () => {
       element.removeEventListener("click", handleClick);
     };
   });
+
+  function decodeLocalPathOnce(value: string) {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  }
+
+  function getLocalImagePath(href: string) {
+    if (!href.startsWith("/")) {
+      return null;
+    }
+    const path = href.split("#")[0]?.split("?")[0] ?? href;
+    if (!/\.(avif|gif|jpe?g|png|webp)$/iu.test(path)) {
+      return null;
+    }
+    return decodeLocalPathOnce(path);
+  }
+
+  function localImagePreviewUrl(filePath: string) {
+    return apiPath(`/editor/download?filePath=${encodeURIComponent(filePath)}`);
+  }
+
+  function renderLocalImagePreviews(element: HTMLElement) {
+    for (const image of element.querySelectorAll<HTMLImageElement>("img[src]")) {
+      const source = image.getAttribute("src")?.trim() ?? "";
+      const localImagePath = getLocalImagePath(source);
+      if (localImagePath) {
+        image.src = localImagePreviewUrl(localImagePath);
+      }
+    }
+
+    for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+      const href = anchor.getAttribute("href")?.trim() ?? "";
+      const localImagePath = getLocalImagePath(href);
+      if (!localImagePath || anchor.nextElementSibling?.getAttribute("data-local-image-preview") === "true") {
+        continue;
+      }
+
+      const preview = document.createElement("a");
+      preview.className = "markdown-body__local-image-preview";
+      preview.dataset.localImagePreview = "true";
+      preview.href = href;
+      preview.title = anchor.textContent?.trim() || localImagePath;
+
+      const image = document.createElement("img");
+      image.alt = anchor.textContent?.trim() || localImagePath.split(/[/\\]/u).at(-1) || "Image";
+      image.loading = "lazy";
+      image.decoding = "async";
+      image.src = localImagePreviewUrl(localImagePath);
+      image.addEventListener("error", () => preview.remove(), { once: true });
+
+      preview.append(image);
+      anchor.insertAdjacentElement("afterend", preview);
+    }
+  }
 
   async function handleClick(event: Event) {
     const copyButton = (event.target as HTMLElement | null)?.closest("button[data-copy-code]");
@@ -152,6 +213,33 @@
 
   .markdown-body :global(p) {
     margin: 0 0 1rem;
+  }
+
+  .markdown-body :global(.markdown-body__local-image-preview) {
+    display: flex;
+    width: fit-content;
+    max-width: min(100%, 48rem);
+    margin: 0.65rem 0 1rem;
+    overflow: hidden;
+    border: 1px solid rgb(224 231 255);
+    border-radius: 0.85rem;
+    background: rgb(248 250 252);
+    box-shadow: 0 12px 28px -24px rgb(15 23 42 / 0.58);
+    transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+  }
+
+  .markdown-body :global(.markdown-body__local-image-preview:hover) {
+    border-color: rgb(125 211 252);
+    box-shadow: 0 18px 32px -22px rgb(2 132 199 / 0.36);
+    transform: translateY(-1px);
+  }
+
+  .markdown-body :global(.markdown-body__local-image-preview img) {
+    display: block;
+    width: auto;
+    max-width: 100%;
+    max-height: min(34rem, 62vh);
+    object-fit: contain;
   }
 
   .markdown-body :global(p:last-child) {
@@ -370,6 +458,16 @@
 
   .markdown-body--compact :global(p) {
     margin: 0 0 0.5rem;
+  }
+
+  .markdown-body--compact :global(.markdown-body__local-image-preview) {
+    max-width: min(100%, 30rem);
+    margin: 0.45rem 0 0.7rem;
+    border-radius: 0.65rem;
+  }
+
+  .markdown-body--compact :global(.markdown-body__local-image-preview img) {
+    max-height: min(22rem, 48vh);
   }
 
   .markdown-body--compact :global(ul),

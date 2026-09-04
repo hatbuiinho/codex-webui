@@ -8613,11 +8613,11 @@
   }
 
   function getImageGenerationSavedPath(item: CodexItem) {
-    return (
+    const savedPath =
       (typeof item.savedPath === "string" && item.savedPath.trim()) ||
       (typeof item.saved_path === "string" && item.saved_path.trim()) ||
-      null
-    );
+      null;
+    return savedPath ? decodeWorkspacePathOnce(savedPath) : null;
   }
 
   function getImageGenerationDownloadName(item: CodexItem) {
@@ -8627,7 +8627,8 @@
   }
 
   function getImageViewPath(item: CodexItem) {
-    return (typeof item.path === "string" && item.path.trim()) || null;
+    const path = (typeof item.path === "string" && item.path.trim()) || null;
+    return path ? decodeWorkspacePathOnce(path) : null;
   }
 
   function getImageViewPreviewUrl(filePath: string) {
@@ -11595,7 +11596,16 @@
   function extractLocalFilePath(href: string) {
     const cleanHref = href.split("#")[0]?.split("?")[0] ?? href;
     const lineMatch = cleanHref.match(/^(\/.*?)(?::\d+)?$/u);
-    return lineMatch?.[1] ?? cleanHref;
+    return decodeWorkspacePathOnce(lineMatch?.[1] ?? cleanHref);
+  }
+
+  function decodeWorkspacePathOnce(value: string) {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      // A literal percent sign is valid in a filesystem name. Keep malformed URI text unchanged.
+      return value;
+    }
   }
 
   function openFileFromMessage(href: string) {
@@ -14375,6 +14385,10 @@
     return `${m.work_steps_count({ count: String(items.length) })} · ${latestLabel}`;
   }
 
+  function isLiveTurnThinking(turn: ConversationState["thread"]["turns"][number]) {
+    return getLiveTurnActivityItems(turn).at(-1)?.type === "reasoning";
+  }
+
   function getTurnEntries(turn: ConversationState["thread"]["turns"][number]) {
     return getTurnRenderModel(turn).fullEntries;
   }
@@ -15422,6 +15436,9 @@
                       <div class="flex-1 min-w-0 space-y-6">
                         {#if isTurnRunning(turn.id)}
                           {@const liveActivityEntries = getLiveTurnActivityEntries(turn)}
+                          {#each getLiveTurnAgentItems(turn) as item (item.id)}
+                            {@render renderTurnItem(turn.id, item, 0)}
+                          {/each}
                           {#if liveActivityEntries.length > 0}
                             <div class="activity-summary">
                               <button
@@ -15430,7 +15447,11 @@
                                 onclick={() => void toggleTurnLogs(turn.id)}
                                 type="button"
                               >
-                                <span class="activity-summary__icon"><RefreshCw size={13} class="animate-spin" /></span>
+                                {#if isLiveTurnThinking(turn)}
+                                  <span aria-hidden="true" class="activity-summary__thinking-dots"><i></i><i></i><i></i></span>
+                                {:else}
+                                  <span class="activity-summary__icon"><RefreshCw size={13} class="animate-spin" /></span>
+                                {/if}
                                 <span class="min-w-0 flex-1 truncate text-left">{getLiveTurnActivityLabel(turn)}</span>
                                 <span class="activity-summary__count">{liveActivityEntries.length}</span>
                                 <ChevronDown size={14} class={`text-gray-400 transition-transform ${isTurnLogExpanded(turn.id) ? "rotate-180" : ""}`} />
@@ -15444,9 +15465,6 @@
                               {/if}
                             </div>
                           {/if}
-                          {#each getLiveTurnAgentItems(turn) as item (item.id)}
-                            {@render renderTurnItem(turn.id, item, 0)}
-                          {/each}
                         {:else if shouldCollapseTurnLogs(turn)}
                           {#if collapsedProgressCount > 0}
                             <div class="activity-summary">
@@ -15579,6 +15597,9 @@
                   <div class="flex py-3">
                     <div class="thinking-indicator inline-flex items-center rounded-2xl border border-gray-200/80 bg-white/90 px-4 py-3 shadow-sm">
                       <span class="thinking-indicator__label text-sm font-medium">{inlineGenerationState.label}</span>
+                      {#if inlineGenerationState.icon === "autorenew"}
+                        <span aria-hidden="true" class="thinking-indicator__dots"><i></i><i></i><i></i></span>
+                      {/if}
                     </div>
                   </div>
                 {/if}
@@ -17225,6 +17246,18 @@
     }
   }
 
+  @keyframes thinking-dot-pulse {
+    0%, 70%, 100% {
+      transform: translateY(0);
+      opacity: 0.36;
+    }
+
+    35% {
+      transform: translateY(-0.2rem);
+      opacity: 1;
+    }
+  }
+
   @keyframes diff-loading-bar {
     0% {
       transform: translateX(-68%) scaleX(0.55);
@@ -17267,6 +17300,39 @@
     z-index: 1;
     color: rgba(17, 24, 39, 0.92);
     letter-spacing: -0.01em;
+  }
+
+  .thinking-indicator__dots,
+  .activity-summary__thinking-dots {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.18rem;
+  }
+
+  .thinking-indicator__dots {
+    position: relative;
+    z-index: 1;
+    margin-left: 0.55rem;
+  }
+
+  .thinking-indicator__dots i,
+  .activity-summary__thinking-dots i {
+    width: 0.28rem;
+    height: 0.28rem;
+    border-radius: 9999px;
+    background: rgb(217 119 6);
+    animation: thinking-dot-pulse 1.05s ease-in-out infinite;
+  }
+
+  .thinking-indicator__dots i:nth-child(2),
+  .activity-summary__thinking-dots i:nth-child(2) {
+    animation-delay: 0.14s;
+  }
+
+  .thinking-indicator__dots i:nth-child(3),
+  .activity-summary__thinking-dots i:nth-child(3) {
+    animation-delay: 0.28s;
   }
 
   .diff-loading-bar {
@@ -18180,7 +18246,9 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .thinking-indicator::after {
+    .thinking-indicator::after,
+    .thinking-indicator__dots i,
+    .activity-summary__thinking-dots i {
       animation: none;
     }
 
