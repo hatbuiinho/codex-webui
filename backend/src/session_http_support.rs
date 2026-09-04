@@ -74,11 +74,6 @@ pub(crate) async fn handle_sessions_api_http(
                         .get("preferences")
                         .cloned()
                         .unwrap_or_else(|| json!({}));
-                    if preferences_payload_requires_owner(&preferences)
-                        && !role_has_owner_access(&state.config, auth.role)
-                    {
-                        return json_error(StatusCode::FORBIDDEN, &owner_required_error_value());
-                    }
                     create_session_payload(
                         &state,
                         &auth.profile_id,
@@ -127,11 +122,6 @@ pub(crate) async fn handle_session_api_http(
                         .get("preferences")
                         .cloned()
                         .unwrap_or_else(|| json!({}));
-                    if preferences_payload_requires_owner(&preferences)
-                        && !role_has_owner_access(&state.config, auth.role)
-                    {
-                        return json_error(StatusCode::FORBIDDEN, &owner_required_error_value());
-                    }
                     let profile_id = resolve_http_session_profile_id(
                         &state,
                         &auth,

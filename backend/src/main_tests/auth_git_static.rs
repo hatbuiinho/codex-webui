@@ -684,15 +684,15 @@ async fn owner_config_blocks_admin_from_owner_only_websocket_methods() {
     assert!(is_ws_method_allowed(UserRole::Owner, "terminal/create"));
     assert!(ws_method_requires_owner("gateway/restart", &json!({})));
     assert!(ws_method_requires_owner("terminal/create", &json!({})));
-    assert!(ws_method_requires_owner(
+    assert!(!ws_method_requires_owner(
         "session/savePreferences",
         &json!({ "preferences": { "autoApproveMode": "session" } })
     ));
-    assert!(ws_method_requires_owner(
+    assert!(!ws_method_requires_owner(
         "turn/send",
         &json!({ "preferences": { "approvalPolicy": "never" } })
     ));
-    assert!(ws_method_requires_owner(
+    assert!(!ws_method_requires_owner(
         "arena/start",
         &json!({ "preferences": { "sandboxMode": "danger-full-access" } })
     ));

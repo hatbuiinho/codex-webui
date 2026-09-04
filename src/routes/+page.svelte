@@ -50,7 +50,7 @@
   import { fly, slide } from "svelte/transition";
   import { portal } from "$lib/actions/portal";
   import { extractAttachmentPaths, stripAttachmentPreamble } from "$lib/attachments";
-  import { api } from "$lib/api";
+  import { api, apiPath } from "$lib/api";
   import {
     applyStreamEvent,
     createConversationState,
@@ -8433,37 +8433,6 @@
     });
   }
 
-  function preferencesForCurrentWebRole(
-    preferences: SessionPreferences
-  ): { preferences: SessionPreferences; constrained: boolean } {
-    if (webRole === "owner") {
-      return { preferences, constrained: false };
-    }
-
-    const constrained =
-      preferences.autoApproveMode === "turn" ||
-      preferences.autoApproveMode === "session" ||
-      preferences.approvalPolicy === "never" ||
-      preferences.approvalPolicy === "on-failure" ||
-      preferences.sandboxMode === "danger-full-access";
-    if (!constrained) {
-      return { preferences, constrained: false };
-    }
-
-    return {
-      preferences: {
-        ...preferences,
-        autoApproveMode: "manual",
-        approvalPolicy:
-          preferences.approvalPolicy === "never" || preferences.approvalPolicy === "on-failure"
-            ? "on-request"
-            : preferences.approvalPolicy,
-        sandboxMode: preferences.sandboxMode === "danger-full-access" ? "workspace-write" : preferences.sandboxMode
-      },
-      constrained: true
-    };
-  }
-
   function setHundredMContextEnabled(enabled: boolean) {
     setPreferencesPatch({
       modelContextWindow: enabled ? HUNDRED_M_CONTEXT_WINDOW : null,
@@ -8560,10 +8529,9 @@
           requestSelectedSessionResync(false);
           return;
         }
-        const requestedPreferences = preferencesForCurrentWebRole(currentBinding.state.preferences);
         const saved = await api.savePreferences(
           sessionId,
-          requestedPreferences.preferences,
+          currentBinding.state.preferences,
           profileIdForSession(sessionId)
         );
         if (saveVersion !== preferenceSaveVersion) {
@@ -8579,9 +8547,6 @@
           applySessionSummaryUpdate(buildSessionSummaryFromConversation(conversation));
         }
         pendingPreferencePatchesBySessionId.delete(sessionId);
-        if (requestedPreferences.constrained) {
-          noticeText = "Saved with safe admin permissions; owner-only session permissions were not used.";
-        }
         if (config) {
           config = applyLocalComposerPreferencesToConfig({
             ...config,
@@ -8663,6 +8628,10 @@
 
   function getImageViewPath(item: CodexItem) {
     return (typeof item.path === "string" && item.path.trim()) || null;
+  }
+
+  function getImageViewPreviewUrl(filePath: string) {
+    return apiPath(`/editor/download?filePath=${encodeURIComponent(filePath)}`);
   }
 
   function getRecordValue(value: unknown): Record<string, unknown> | null {
@@ -9470,7 +9439,7 @@
       const activeConversation = materialized.state;
       const attachmentIds = attachmentSnapshot.map((attachment) => attachment.id);
       const selectedSkillsSnapshot = [...(activeConversation.selectedSkills ?? [])];
-      const requestedPreferences = preferencesForCurrentWebRole(activeConversation.preferences);
+      const preferences = activeConversation.preferences;
       const clientUserMessageId = createClientUserMessageId();
       mutationSignature = buildComposerMutationSignature("message", sessionId, prompt, selectedSkillsSnapshot, attachmentIds);
       if (!beginComposerMutation(mutationSignature)) {
@@ -9502,16 +9471,13 @@
           prompt: draftText,
           skills: selectedSkillsSnapshot,
           attachmentIds,
-          preferences: requestedPreferences.preferences,
+          preferences,
           clientUserMessageId,
           profileId: sessionProfileId
         })
       .then(() => {
         scheduleSessionRefresh(80);
         scheduleSelectedSessionStateRefresh(sessionId, 80);
-        if (requestedPreferences.constrained) {
-          noticeText = "Sent with safe admin permissions; owner-only session permissions were not used.";
-        }
       })
         .catch((error) => {
           if (pendingQueueModeSessionKey === sessionStateKey(sessionId, sessionProfileId)) {
@@ -14380,6 +14346,35 @@
     return getTurnRenderModel(turn).collapsedEntries;
   }
 
+  function getLiveTurnActivityItems(turn: ConversationState["thread"]["turns"][number]) {
+    return turn.items.filter(
+      (item) => item.type !== "userMessage" && item.type !== "agentMessage" && !isInternalTranscriptItem(item)
+    );
+  }
+
+  function getLiveTurnActivityEntries(turn: ConversationState["thread"]["turns"][number]) {
+    return getRenderableTurnEntries(getLiveTurnActivityItems(turn));
+  }
+
+  function getLiveTurnAgentItems(turn: ConversationState["thread"]["turns"][number]) {
+    return turn.items.filter((item) => item.type === "agentMessage");
+  }
+
+  function getLiveTurnActivityLabel(turn: ConversationState["thread"]["turns"][number]) {
+    const items = getLiveTurnActivityItems(turn);
+    const latest = items.at(-1);
+    if (!latest) {
+      return ui.executing;
+    }
+    const latestLabel =
+      latest.type === "imageView" && getImageViewPath(latest)
+        ? `${getToolItemLabel(latest)} · ${baseName(getImageViewPath(latest) ?? "")}`
+        : latest.type === "reasoning"
+          ? m.reasoning()
+          : getToolItemLabel(latest);
+    return `${m.work_steps_count({ count: String(items.length) })} · ${latestLabel}`;
+  }
+
   function getTurnEntries(turn: ConversationState["thread"]["turns"][number]) {
     return getTurnRenderModel(turn).fullEntries;
   }
@@ -15425,22 +15420,48 @@
                     <div class="flex gap-4">
                       <div class="flex-shrink-0 w-8 h-8 rounded-lg bg-amber-600 text-white flex items-center justify-center shadow-sm mt-1"><Bot size={18} /></div>
                       <div class="flex-1 min-w-0 space-y-6">
-                        {#if shouldCollapseTurnLogs(turn)}
-                          {#if collapsedProgressCount > 0}
-                            <div class="turn-card-shell border border-gray-100 rounded-xl bg-gray-50/50 overflow-hidden">
+                        {#if isTurnRunning(turn.id)}
+                          {@const liveActivityEntries = getLiveTurnActivityEntries(turn)}
+                          {#if liveActivityEntries.length > 0}
+                            <div class="activity-summary">
                               <button
-                                class="turn-card-header turn-card-header--neutral w-full flex items-center justify-between px-4 py-3 hover:bg-gray-100/50 transition-colors"
-                                data-sticky-level="0"
+                                aria-expanded={isTurnLogExpanded(turn.id)}
+                                class="activity-summary__trigger"
                                 onclick={() => void toggleTurnLogs(turn.id)}
+                                type="button"
                               >
-                                <div class="flex items-center gap-3">
-                                  <div class="p-1.5 bg-white border border-gray-200 rounded-lg text-gray-400"><History size={14} /></div>
-                                  <span class="text-xs font-bold text-gray-600 tracking-tight uppercase">{m.work_steps_count({ count: String(collapsedProgressCount) })}</span>
-                                </div>
-                                <ChevronDown size={14} class="text-gray-400 {isTurnLogExpanded(turn.id) ? 'rotate-180' : ''} transition-transform" />
+                                <span class="activity-summary__icon"><RefreshCw size={13} class="animate-spin" /></span>
+                                <span class="min-w-0 flex-1 truncate text-left">{getLiveTurnActivityLabel(turn)}</span>
+                                <span class="activity-summary__count">{liveActivityEntries.length}</span>
+                                <ChevronDown size={14} class={`text-gray-400 transition-transform ${isTurnLogExpanded(turn.id) ? "rotate-180" : ""}`} />
                               </button>
                               {#if isTurnLogExpanded(turn.id)}
-                                <div class="turn-card-expand p-4 pt-0 space-y-4 bg-white/50 border-t border-gray-100" transition:slide|local={{ duration: 220 }}>
+                                <div class="activity-summary__details" transition:slide|local={{ duration: 180 }}>
+                                  {#each liveActivityEntries as entry (entry.key)}
+                                    {@render renderTurnEntry(turn.id, entry, 1)}
+                                  {/each}
+                                </div>
+                              {/if}
+                            </div>
+                          {/if}
+                          {#each getLiveTurnAgentItems(turn) as item (item.id)}
+                            {@render renderTurnItem(turn.id, item, 0)}
+                          {/each}
+                        {:else if shouldCollapseTurnLogs(turn)}
+                          {#if collapsedProgressCount > 0}
+                            <div class="activity-summary">
+                              <button
+                                aria-expanded={isTurnLogExpanded(turn.id)}
+                                class="activity-summary__trigger"
+                                onclick={() => void toggleTurnLogs(turn.id)}
+                                type="button"
+                              >
+                                <span class="activity-summary__icon"><History size={13} /></span>
+                                <span class="min-w-0 flex-1 text-left">{m.work_steps_count({ count: String(collapsedProgressCount) })}</span>
+                                <ChevronDown size={14} class={`text-gray-400 transition-transform ${isTurnLogExpanded(turn.id) ? "rotate-180" : ""}`} />
+                              </button>
+                              {#if isTurnLogExpanded(turn.id)}
+                                <div class="activity-summary__details" transition:slide|local={{ duration: 180 }}>
                                   {#if isTurnLoading(turn.id)}<div class="py-4 flex items-center justify-center gap-2 text-xs text-gray-400"><RefreshCw size={12} class="animate-spin" />{m.loading()}</div>
                                   {:else if getTurnLoadError(turn.id)}<div class="p-3 bg-red-50 text-red-600 rounded-xl text-xs">{getTurnLoadError(turn.id)}</div>
                                   {:else}
@@ -17871,6 +17892,155 @@
     overflow: visible !important;
   }
 
+  .activity-summary {
+    border-left: 2px solid rgba(245, 158, 11, 0.32);
+    border-radius: 0.35rem;
+    background: rgba(255, 251, 235, 0.42);
+  }
+
+  .activity-summary__trigger,
+  .activity-entry__trigger {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 0.55rem;
+    border-radius: 0.35rem;
+    padding: 0.52rem 0.65rem;
+    color: rgb(75 85 99);
+    font-size: 0.75rem;
+    line-height: 1rem;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+
+  .activity-summary__trigger {
+    font-weight: 600;
+  }
+
+  .activity-summary__trigger:hover,
+  .activity-entry__trigger:hover {
+    background: rgba(245, 158, 11, 0.08);
+    color: rgb(55 65 81);
+  }
+
+  .activity-summary__icon {
+    display: inline-flex;
+    flex: 0 0 auto;
+    color: rgb(217 119 6);
+  }
+
+  .activity-summary__count,
+  .activity-entry__meta {
+    flex: 0 0 auto;
+    border-radius: 9999px;
+    background: rgba(229, 231, 235, 0.7);
+    padding: 0.08rem 0.38rem;
+    color: rgb(107 114 128);
+    font-size: 0.625rem;
+    font-weight: 700;
+    line-height: 0.9rem;
+  }
+
+  .activity-summary__details {
+    display: grid;
+    gap: 0.35rem;
+    border-top: 1px solid rgba(229, 231, 235, 0.74);
+    padding: 0.42rem 0.55rem 0.55rem;
+  }
+
+  .activity-entry {
+    overflow: hidden;
+    border: 1px solid rgba(229, 231, 235, 0.88);
+    border-radius: 0.55rem;
+    background: rgba(255, 255, 255, 0.78);
+  }
+
+  .activity-entry--reasoning {
+    border-color: rgba(253, 230, 138, 0.72);
+    background: rgba(255, 251, 235, 0.5);
+  }
+
+  .activity-entry--image {
+    border-color: rgba(186, 230, 253, 0.9);
+    background: rgba(240, 249, 255, 0.5);
+  }
+
+  .activity-entry__image-icon {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    color: rgb(2 132 199);
+  }
+
+  .activity-entry__image-thumb {
+    width: 2rem;
+    height: 2rem;
+    flex: 0 0 auto;
+    border: 1px solid rgba(186, 230, 253, 0.9);
+    border-radius: 0.35rem;
+    object-fit: cover;
+    background: rgb(240 249 255);
+  }
+
+  .activity-entry__details {
+    display: grid;
+    gap: 0.45rem;
+    border-top: 1px solid rgba(229, 231, 235, 0.72);
+    padding: 0.55rem 0.65rem;
+  }
+
+  .activity-entry__image-details {
+    border-top-color: rgba(186, 230, 253, 0.78);
+  }
+
+  .activity-entry__image-preview {
+    display: flex;
+    max-height: 26rem;
+    justify-content: center;
+    overflow: hidden;
+    border: 1px solid rgba(186, 230, 253, 0.9);
+    border-radius: 0.45rem;
+    background: rgba(240, 249, 255, 0.55);
+  }
+
+  .activity-entry__image-preview img {
+    display: block;
+    max-width: 100%;
+    max-height: 26rem;
+    object-fit: contain;
+  }
+
+  :global(:root[data-theme="dark"]) .activity-summary {
+    border-left-color: rgba(251, 191, 36, 0.42);
+    background: rgba(120, 53, 15, 0.16);
+  }
+
+  :global(:root[data-theme="dark"]) .activity-entry {
+    border-color: rgba(71, 85, 105, 0.48);
+    background: rgba(15, 23, 42, 0.72);
+  }
+
+  :global(:root[data-theme="dark"]) .activity-entry--reasoning {
+    border-color: rgba(245, 158, 11, 0.28);
+    background: rgba(120, 53, 15, 0.16);
+  }
+
+  :global(:root[data-theme="dark"]) .activity-entry--image {
+    border-color: rgba(14, 116, 144, 0.56);
+    background: rgba(8, 47, 73, 0.22);
+  }
+
+  :global(:root[data-theme="dark"]) .activity-summary__trigger,
+  :global(:root[data-theme="dark"]) .activity-entry__trigger {
+    color: #cbd5e1;
+  }
+
+  :global(:root[data-theme="dark"]) .activity-summary__trigger:hover,
+  :global(:root[data-theme="dark"]) .activity-entry__trigger:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: #f8fafc;
+  }
+
   @supports (overflow: clip) {
     .turn-card-shell {
       overflow: clip !important;
@@ -18309,102 +18479,117 @@
     </div>
   {:else if item.type === "imageView"}
     {@const imagePath = getImageViewPath(item)}
-    <div class="turn-card-shell overflow-hidden rounded-2xl border border-sky-100 bg-white shadow-sm">
-      <div class="turn-card-header turn-card-header--neutral flex items-center justify-between gap-3 border-b border-sky-100 px-4 py-3" data-sticky-level={stickyLevel}>
-        <div class="flex min-w-0 items-center gap-3">
-          <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-sky-100 bg-sky-50 text-sky-700">
-            <Layout size={15} />
-          </div>
-          <div class="min-w-0">
-            <h4 class="truncate text-[10px] font-bold uppercase tracking-widest text-sky-700">{getToolItemLabel(item)}</h4>
-            {#if imagePath}
-              <p class="mt-1 truncate text-xs text-gray-500">{imagePath}</p>
-            {/if}
-          </div>
-        </div>
-        {#if imagePath}
-          <button
-            class="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[10px] font-bold text-gray-700 transition-colors hover:bg-gray-50"
-            onclick={() => openFileTab(imagePath)}
-            type="button"
-          >
-            <FileText size={12} />
-            <span>{m.open()}</span>
-          </button>
+    {@const imagePreviewUrl = imagePath ? getImageViewPreviewUrl(imagePath) : null}
+    <div class="activity-entry activity-entry--image">
+      <button
+        aria-expanded={isItemExpanded(turnId, item.id)}
+        class="activity-entry__trigger"
+        onclick={() => void toggleToolItem(turnId, item.id)}
+        type="button"
+      >
+        <span class="activity-entry__image-icon"><Layout size={14} /></span>
+        <span class="min-w-0 flex-1 text-left">
+          <span class="block truncate text-[11px] font-bold leading-tight text-gray-800">{getToolItemLabel(item)}</span>
+          {#if imagePath}
+            <span class="mt-0.5 block truncate text-[10px] font-medium text-gray-500">{baseName(imagePath)}</span>
+          {/if}
+        </span>
+        {#if imagePreviewUrl}
+          <img alt="" aria-hidden="true" class="activity-entry__image-thumb" loading="lazy" src={imagePreviewUrl} />
         {/if}
-      </div>
+        <ChevronDown size={14} class={`shrink-0 text-gray-400 transition-transform ${isItemExpanded(turnId, item.id) ? "rotate-180" : ""}`} />
+      </button>
+      {#if isItemExpanded(turnId, item.id)}
+        <div class="activity-entry__details activity-entry__image-details" transition:slide|local={{ duration: 160 }}>
+          {#if imagePreviewUrl && imagePath}
+            <a class="activity-entry__image-preview" href={imagePreviewUrl} rel="noreferrer" target="_blank" title={ui.openInNewTab}>
+              <img alt={baseName(imagePath)} loading="lazy" src={imagePreviewUrl} />
+            </a>
+            <div class="flex min-w-0 items-center justify-between gap-2">
+              <p class="min-w-0 truncate font-mono text-[10px] text-gray-500" title={imagePath}>{imagePath}</p>
+              <button
+                class="inline-flex shrink-0 items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:bg-gray-50"
+                onclick={() => openFileTab(imagePath)}
+                type="button"
+              >
+                <FileText size={11} />
+                <span>{m.open()}</span>
+              </button>
+            </div>
+          {:else}
+            <p class="text-xs text-gray-500">{getToolItemSummary(item)}</p>
+          {/if}
+        </div>
+      {/if}
     </div>
   {:else if item.type === "enteredReviewMode" || item.type === "exitedReviewMode"}
     {@render renderReviewModeItem(item, stickyLevel)}
   {:else if item.type === "reasoning"}
-    <div class="turn-card-shell overflow-hidden rounded-2xl border border-amber-100 bg-amber-50/40 shadow-sm">
-      <div class="turn-card-header turn-card-header--amber flex items-start gap-3 border-b border-amber-100 px-4 py-3" data-sticky-level={stickyLevel}>
-        <div class="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-amber-100 bg-white text-amber-600">
-          <Zap size={16} />
-        </div>
-        <div class="min-w-0">
-          <h4 class="text-[10px] font-bold uppercase tracking-widest leading-none text-amber-700">{m.reasoning()}</h4>
-          {#if Array.isArray(item.summary) && item.summary.length > 0}
-            <p class="mt-1 text-xs leading-relaxed text-amber-700/80 break-words">
-              {m.steps_count({ count: String(item.summary.length) })}
-            </p>
-          {/if}
-        </div>
-      </div>
-      <div class="space-y-3 bg-white/85 px-4 py-3">
+    <div class="activity-entry activity-entry--reasoning">
+      <button
+        aria-expanded={isItemExpanded(turnId, item.id)}
+        class="activity-entry__trigger"
+        onclick={() => void toggleToolItem(turnId, item.id)}
+        type="button"
+      >
+        <Zap size={14} class="shrink-0 text-amber-500" />
+        <span class="min-w-0 flex-1 text-left text-xs font-medium text-gray-600">{m.reasoning()}</span>
+        {#if Array.isArray(item.summary) && item.summary.length > 0}
+          <span class="activity-entry__meta">{m.steps_count({ count: String(item.summary.length) })}</span>
+        {/if}
+        <ChevronDown size={13} class={`text-gray-400 transition-transform ${isItemExpanded(turnId, item.id) ? "rotate-180" : ""}`} />
+      </button>
+      {#if isItemExpanded(turnId, item.id)}
+      <div class="activity-entry__details" transition:slide|local={{ duration: 160 }}>
         {#if String(item.text ?? "").trim()}
-          <div class="rounded-xl border border-amber-100 bg-white px-3 py-3">
+          <div class="rounded-lg bg-amber-50/40 px-3 py-2.5">
             <MarkdownMessage compact expandLabel={ui.showFullMessage} maxInitialChars={compactMarkdownInitialChars} on:openLocalPath={(event: CustomEvent<{ href: string }>) => openFileFromMessage(event.detail.href)} text={String(item.text ?? "")} />
           </div>
         {/if}
         {#if Array.isArray(item.summary) && item.summary.length > 0}
-          <div class="space-y-2">
+          <div class="space-y-1.5">
             {#each item.summary as summaryEntry, index (`${item.id}:summary:${index}`)}
-              <div class="rounded-xl border border-amber-100/70 bg-amber-50/60 px-3 py-2.5 text-sm leading-relaxed text-gray-700">
+              <div class="rounded-lg bg-amber-50/60 px-3 py-2 text-sm leading-relaxed text-gray-700">
                 <MarkdownMessage compact expandLabel={ui.showFullMessage} maxInitialChars={compactMarkdownInitialChars} on:openLocalPath={(event: CustomEvent<{ href: string }>) => openFileFromMessage(event.detail.href)} text={summaryEntry} />
               </div>
             {/each}
           </div>
         {/if}
       </div>
+      {/if}
     </div>
   {:else if item.type === "plan"}
-    <div class="turn-card-shell w-full min-w-0 overflow-hidden rounded-2xl border border-amber-100 bg-amber-50/25 shadow-sm">
-      <div class="turn-card-header turn-card-header--amber flex items-center gap-3 border-b border-amber-100 px-4 py-2.5" data-sticky-level={stickyLevel}>
-        <ListTodo size={14} class="text-amber-700" />
-        <span class="text-[10px] font-bold uppercase tracking-widest text-amber-700">{ui.plannedStrategy}</span>
-      </div>
-      <div class="bg-white/80 px-4 py-3 text-gray-700">
-        <MarkdownMessage compact expandLabel={ui.showFullMessage} maxInitialChars={compactMarkdownInitialChars} on:openLocalPath={(event: CustomEvent<{ href: string }>) => openFileFromMessage(event.detail.href)} text={String(item.text ?? "")} />
-      </div>
+    <div class="activity-entry activity-entry--reasoning">
+      <button aria-expanded={isItemExpanded(turnId, item.id)} class="activity-entry__trigger" onclick={() => void toggleToolItem(turnId, item.id)} type="button">
+        <ListTodo size={14} class="shrink-0 text-amber-600" />
+        <span class="min-w-0 flex-1 text-left text-xs font-medium text-gray-600">{ui.plannedStrategy}</span>
+        <ChevronDown size={13} class={`text-gray-400 transition-transform ${isItemExpanded(turnId, item.id) ? "rotate-180" : ""}`} />
+      </button>
+      {#if isItemExpanded(turnId, item.id)}
+        <div class="activity-entry__details text-gray-700" transition:slide|local={{ duration: 160 }}>
+          <MarkdownMessage compact expandLabel={ui.showFullMessage} maxInitialChars={compactMarkdownInitialChars} on:openLocalPath={(event: CustomEvent<{ href: string }>) => openFileFromMessage(event.detail.href)} text={String(item.text ?? "")} />
+        </div>
+      {/if}
     </div>
   {:else if item.type === "contextCompaction"}
     {@const contextCompressionRunning = isContextCompactionRunning(turnId, item)}
-    <div class="turn-card-shell overflow-hidden rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50/80 via-white to-white shadow-sm">
-      <div class="turn-card-header turn-card-header--amber flex items-center justify-between gap-3 border-b border-amber-100 px-4 py-3" data-sticky-level={stickyLevel}>
-        <div class="flex min-w-0 items-center gap-3">
-          <div class={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border ${contextCompressionRunning ? "border-amber-200 bg-amber-100 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
-            {#if contextCompressionRunning}
-              <RefreshCw size={15} class="animate-spin" />
-            {:else}
-              <CheckCircle2 size={15} />
-            {/if}
-          </div>
-          <div class="min-w-0">
-            <h4 class="text-[10px] font-bold uppercase tracking-widest text-amber-700">{ui.contextCompression}</h4>
-            <p class="mt-1 text-xs leading-relaxed text-gray-600">
-              {contextCompressionRunning ? ui.contextCompressionInProgress : ui.contextCompressionCompleted}
-            </p>
-          </div>
-        </div>
-        <span class={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-widest ${contextCompressionRunning ? "bg-amber-100 text-amber-700" : "bg-emerald-50 text-emerald-700"}`}>
-          {contextCompressionRunning ? ui.executing : m.done()}
+    <div class="activity-entry activity-entry--reasoning">
+      <div class="activity-entry__trigger">
+        {#if contextCompressionRunning}
+          <RefreshCw size={14} class="shrink-0 animate-spin text-amber-600" />
+        {:else}
+          <CheckCircle2 size={14} class="shrink-0 text-emerald-600" />
+        {/if}
+        <span class="min-w-0 flex-1 text-left">
+          <span class="block truncate text-[11px] font-bold leading-tight text-gray-800">{ui.contextCompression}</span>
+          <span class="mt-0.5 block truncate text-[10px] font-medium text-gray-500">{contextCompressionRunning ? ui.contextCompressionInProgress : ui.contextCompressionCompleted}</span>
         </span>
+        <span class="activity-entry__meta">{contextCompressionRunning ? ui.executing : m.done()}</span>
       </div>
     </div>
   {:else if ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"].includes(item.type)}
-    <div class="turn-card-shell border border-gray-200 rounded-2xl bg-white overflow-hidden shadow-sm hover:shadow-md transition-shadow">
-      <button class="turn-card-header turn-card-header--neutral flex w-full items-center justify-between gap-2.5 px-3 py-2.25 hover:bg-gray-50 transition-colors" data-sticky-level={stickyLevel} onclick={() => void toggleToolItem(turnId, item.id)}>
+    <div class="activity-entry">
+      <button class="activity-entry__trigger" aria-expanded={isItemExpanded(turnId, item.id)} onclick={() => void toggleToolItem(turnId, item.id)} type="button">
         <div class="flex min-w-0 flex-1 items-center gap-2.5">
           <div class="shrink-0 rounded-lg bg-gray-100 p-1.5 text-gray-500">
             {#if item.type === 'commandExecution'}
@@ -18430,7 +18615,7 @@
         </div>
       </button>
       {#if isItemExpanded(turnId, item.id)}
-        <div class="turn-card-expand p-0 border-t border-gray-100" transition:slide|local={{ duration: 220 }}>
+        <div class="activity-entry__details" transition:slide|local={{ duration: 180 }}>
           {#if isItemDetailLoading(turnId, item.id)}
             {#if item.type === "fileChange"}
               {@render renderDiffLoadingCard(ui.computingDiffs)}
@@ -18459,12 +18644,31 @@
       {/if}
     </div>
   {:else if item.type === "collabAgentToolCall"}
-    <div class="turn-card-shell border border-amber-200 rounded-2xl bg-white overflow-hidden shadow-sm group">
-      <div class="turn-card-header turn-card-header--amber flex items-center justify-between gap-3 px-3 py-2.25" data-sticky-level={stickyLevel}>
-        <div class="flex items-center gap-2.5"><div class="rounded-lg border border-amber-200 bg-white p-1.5 text-amber-600 shadow-sm transition-all group-hover:bg-amber-600 group-hover:text-white"><Bot size={15} /></div><div><h4 class="text-[11px] font-bold leading-tight text-gray-900">{ui.subagentInvocation}</h4><div class="mt-0.5 flex items-center gap-1.5"><span class="text-[10px] font-bold uppercase tracking-widest text-amber-600">{item.tool}</span><span class="h-1 w-1 rounded-full bg-amber-200"></span><span class="text-[10px] font-medium uppercase tracking-tighter text-gray-500">{item.status}</span></div></div></div>
-        {#if getPrimarySubagentThreadId(item)}<button class="rounded-md border border-amber-200 bg-white px-2.5 py-1 text-[10px] font-bold text-amber-700 shadow-sm transition-all hover:bg-amber-600 hover:text-white" onclick={() => void openSubagentThread(getPrimarySubagentThreadId(item) ?? "")}>{ui.viewThread}</button>{/if}
-      </div>
-      {#if item.prompt}<div class="border-t border-amber-100 bg-white p-3"><p class="mb-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-400">{ui.instructions}</p><pre class="text-[11px] font-mono italic leading-relaxed text-gray-600 whitespace-pre-wrap">{String(item.prompt)}</pre></div>{/if}
+    <div class="activity-entry activity-entry--reasoning">
+      <button aria-expanded={isItemExpanded(turnId, item.id)} class="activity-entry__trigger" onclick={() => void toggleToolItem(turnId, item.id)} type="button">
+        <Bot size={14} class="shrink-0 text-amber-600" />
+        <span class="min-w-0 flex-1 text-left">
+          <span class="block truncate text-[11px] font-bold leading-tight text-gray-800">{ui.subagentInvocation}</span>
+          <span class="mt-0.5 block truncate text-[10px] font-medium text-gray-500">{item.tool} · {item.status}</span>
+        </span>
+        <ChevronDown size={14} class={`shrink-0 text-gray-400 transition-transform ${isItemExpanded(turnId, item.id) ? "rotate-180" : ""}`} />
+      </button>
+      {#if isItemExpanded(turnId, item.id)}
+        <div class="activity-entry__details" transition:slide|local={{ duration: 160 }}>
+          {#if item.prompt}
+            <div>
+              <p class="mb-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-400">{ui.instructions}</p>
+              <pre class="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-gray-600">{String(item.prompt)}</pre>
+            </div>
+          {/if}
+          {#if getPrimarySubagentThreadId(item)}
+            <button class="inline-flex w-fit items-center gap-1.5 rounded-md border border-amber-200 bg-white px-2.5 py-1.5 text-[10px] font-bold text-amber-700 transition-colors hover:bg-amber-50" onclick={() => void openSubagentThread(getPrimarySubagentThreadId(item) ?? "")} type="button">
+              <Bot size={11} />
+              <span>{ui.viewThread}</span>
+            </button>
+          {/if}
+        </div>
+      {/if}
     </div>
   {/if}
 {/snippet}

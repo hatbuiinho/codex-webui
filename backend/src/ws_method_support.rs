@@ -52,12 +52,7 @@ pub(crate) fn ws_method_requires_owner(method: &str, params: &Value) -> bool {
             | "terminal/subscribe"
             | "terminal/unsubscribe"
             | "system/shutdown/force"
-    ) || (matches!(
-        method,
-        "session/create" | "session/savePreferences" | "turn/send" | "arena/start"
-    ) && preferences_payload_requires_owner(
-        params.get("preferences").unwrap_or(&Value::Null),
-    )) || matches!(
+    ) || matches!(
         method,
         "account/login/start"
             | "account/login/cancel"

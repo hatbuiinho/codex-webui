@@ -206,11 +206,6 @@ pub(crate) async fn handle_session_messages_api_http(
                 .get("preferences")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            if preferences_payload_requires_owner(&preferences)
-                && !role_has_owner_access(&state.config, auth.role)
-            {
-                return json_error(StatusCode::FORBIDDEN, &owner_required_error_value());
-            }
             send_turn_payload(
                 &state,
                 &profile_id,
